@@ -1,0 +1,44 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- 著作権上コミット禁止 ---
+# Minecraft のアセット（Mojang EULA）。実行時に .minecraft から抽出する。
+assets/mc/
+*.ogg
+# 音源分離・採譜モデルの重み（ライセンス不明瞭なものが多い）
+models/
+*.ckpt
+*.pth
+*.onnx
+*.tflite
+
+# --- 生成物 ---
+out/
+work/
+cache/
+*.wav
+*.flac
+*.mp3
+*.m4a
+*.litematic
+*.schem
+*.nbt
+*.nbs
+
+# ただしテスト用の小さな入力は残す（明示的に追加する）
+!tests/**/expected/*.nbs
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

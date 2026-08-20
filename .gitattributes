@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.ogg binary
+*.litematic binary
+*.nbs binary
