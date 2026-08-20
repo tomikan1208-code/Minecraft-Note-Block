@@ -53,3 +53,6 @@ logs/
 usercache.json
 options.txt
 realms_persistence.json
+
+# テスト用 MIDI は mcnb.testsongs から決定論的に生成できるので追跡しない
+tests/inputs/
