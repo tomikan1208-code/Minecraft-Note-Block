@@ -111,6 +111,57 @@ def _split_builds(layout: Layout) -> list[list[Placement]]:
 
 
 # --------------------------------------------------------------------------- #
+# 操作盤
+# --------------------------------------------------------------------------- #
+
+#: (ラベル色, 呼ぶ関数)。色ブロックがそのままボタンの意味になる
+PANEL_BUTTONS = [
+    ("lime_concrete", "build", "設置"),
+    ("light_blue_concrete", "play", "演奏"),
+    ("red_concrete", "stop", "停止"),
+    ("yellow_concrete", "goto_start", "開始位置へ"),
+]
+
+#: 操作盤を置く位置（演奏開始位置からの X オフセット）
+PANEL_OFFSET_X = -10
+
+
+def _panel_commands(x0: int, y0: int, z0: int) -> list[str]:
+    """立って押せるコマンドブロックの操作盤を組む。
+
+    上から見ると Z 方向に 4 個並ぶ。足元の色つきコンクリートがボタンのラベル::
+
+        黄 = 開始位置へ / 赤 = 停止 / 水色 = 演奏 / 黄緑 = 設置
+    """
+    px = x0 + PANEL_OFFSET_X
+    lines = [
+        "# 操作盤",
+        f"forceload add {px - 4} {z0 - 8} {x0 + 4} {z0 + 8}",
+        # 立つ床
+        f"fill {px - 2} {y0 - 1} {z0 - 4} {px + 2} {y0 - 1} {z0 + 4} minecraft:smooth_stone",
+        f"fill {px - 2} {y0} {z0 - 4} {px + 2} {y0 + 2} {z0 + 4} minecraft:air",
+    ]
+
+    for i, (colour, fn, _label) in enumerate(PANEL_BUTTONS):
+        z = z0 - 3 + i * 2
+        lines.append(f"setblock {px} {y0 - 1} {z} minecraft:{colour} replace")
+        # コマンドブロックから実行すると @s はプレイヤーにならないので、
+        # 必ず execute as @p で包んでから関数を呼ぶ
+        command = f"execute as @p at @s run function {NS}:{fn}"
+        lines.append(
+            f"setblock {px + 1} {y0 - 1} {z} "
+            f'minecraft:command_block[facing=up]{{Command:"{command}",auto:0b,TrackOutput:0b}} replace'
+        )
+        lines.append(
+            f"setblock {px + 1} {y0} {z} minecraft:stone_button[face=floor,facing=east] replace"
+        )
+
+    lines.append(f"tp @p {px} {y0} {z0} 90 0")
+    lines.append('tellraw @a {"text":"[mcnb] 操作盤: 黄緑=設置 / 水色=演奏 / 赤=停止 / 黄=開始位置へ"}')
+    return lines
+
+
+# --------------------------------------------------------------------------- #
 # 本体
 # --------------------------------------------------------------------------- #
 
@@ -156,7 +207,7 @@ def emit(layout: Layout, out_dir: Path, name: str | None = None, overwrite: bool
             f"scoreboard players set #playing {NS} 0",
             f"scoreboard players set #t {NS} 0",
             f"scoreboard players set #length {NS} {total_ticks + 1}",
-            f'tellraw @a {{"text":"[mcnb] {name} 読み込み完了。/function {NS}:build → /function {NS}:play"}}',
+            f'tellraw @a {{"text":"[mcnb] {name} 読み込み完了。/function {NS}:panel で操作盤を出す"}}',
         ],
     )
 
@@ -175,6 +226,9 @@ def emit(layout: Layout, out_dir: Path, name: str | None = None, overwrite: bool
             "weather clear",
         ],
     )
+
+    # --- 操作盤（コマンドブロック + ボタン）--------------------------------- #
+    w.write("panel.mcfunction", _panel_commands(x0, y0, z0))
 
     # --- build ------------------------------------------------------------- #
     batches = _split_builds(layout)

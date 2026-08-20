@@ -138,10 +138,10 @@ def cmd_build(args: argparse.Namespace) -> int:
 次にやること:
   1. ワールドの datapacks/ に {pack_dir.name} を置く（--install <world>/datapacks で自動化できる）
   2. /reload
-  3. /function mcnb:build     ← 音符ブロックを設置（{result.pack.build_parts} 区画ぶん、少し待つ）
-  4. /function mcnb:play      ← 演奏開始
-     /function mcnb:stop      ← 停止
-     /function mcnb:goto_start ← 開始位置へ戻る
+  3. /function mcnb:panel     ← 操作盤（コマンドブロック+ボタン）を出してそこへ飛ぶ
+  4. 黄緑のボタン = 設置（{result.pack.build_parts} 区画ぶん、少し待つ）
+     水色のボタン = 演奏 / 赤 = 停止 / 黄 = 開始位置へ
+     コマンドでも同じ: /function mcnb:build /play /stop /goto_start
 """)
     return 0
 
