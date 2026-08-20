@@ -42,3 +42,14 @@ cache/
 Thumbs.db
 .idea/
 .vscode/
+
+# --- Minecraft のゲームディレクトリ（個人情報が入る）---
+# ランチャーのプロファイルがこのフォルダを指すと .minecraft が生えてくる。
+# usercache.json / logs / telemetry / saves は絶対にコミットしない。
+.minecraft/
+**/.minecraft/
+saves/
+logs/
+usercache.json
+options.txt
+realms_persistence.json
