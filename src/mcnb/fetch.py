@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -88,6 +89,10 @@ def ensure_ffmpeg_on_path(bin_dir: Path | None = None) -> Path | None:
     audio-separator は ``shutil.which("ffmpeg")`` で存在確認するので、
     imageio-ffmpeg の同梱バイナリ（名前がバージョン入りで which に引っかからない）を
     ``ffmpeg.exe`` としてコピーしておく。
+
+    **この処理のあとの ``os.environ["PATH"]`` にそのディレクトリが入る。**
+    子プロセスに渡すだけなら呼び出し側で env を組んでもよいが、
+    audio-separator を同じプロセスの中で動かす場合はこれが要る。
     """
     if shutil.which("ffmpeg"):
         return Path(shutil.which("ffmpeg")).parent
@@ -101,7 +106,12 @@ def ensure_ffmpeg_on_path(bin_dir: Path | None = None) -> Path | None:
     target = bin_dir / ("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg")
     if not target.is_file():
         shutil.copy2(exe, target)
-    return bin_dir.resolve()
+
+    resolved = bin_dir.resolve()
+    current = os.environ.get("PATH", "")
+    if str(resolved) not in current.split(os.pathsep):
+        os.environ["PATH"] = f"{resolved}{os.pathsep}{current}"
+    return resolved
 
 
 def fetch(url: str, cache_dir: Path | None = None, to_wav: bool = True) -> Media:

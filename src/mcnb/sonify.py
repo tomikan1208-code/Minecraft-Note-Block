@@ -11,6 +11,7 @@
     chords.wav   原音（小さめ）＋ 推定コードのパッド
     melody.wav   原音（小さめ）＋ 抽出した主旋律の単音
     melody_solo.wav  主旋律だけ
+    karaoke.wav  伴奏だけ（声を抜いたもの）。分離できたときだけ
 
 原音を小さく混ぜてあるのは、**ずれていたら即分かる**ようにするため。
 単独で聴くと「それらしく」聞こえてしまう。
@@ -28,6 +29,15 @@ from .musical import HOP, MusicalContext, analyze
 
 #: 原音を混ぜる音量。小さすぎると照合にならず、大きすぎると重ねた音が埋もれる
 ORIGINAL_GAIN = 0.35
+
+#: 何を確かめるためのファイルか
+TRACK_LABELS = {
+    "beats": "拍とテンポが合っているか（クリックが曲に乗っているか）",
+    "chords": "コードが合っているか（パッドが原曲とぶつからないか）",
+    "melody": "主旋律が合っているか（原曲の旋律をなぞっているか）",
+    "melody_solo": "主旋律だけ",
+    "karaoke": "声が抜けているか（伴奏だけ）",
+}
 #: 立ち上がり・切れ際のなまし（秒）。ぶつ切りのプチノイズを防ぐ
 RAMP = 0.005
 
@@ -155,6 +165,14 @@ def write_all(
         path = out_dir / f"{name}.wav"
         sf.write(path, np.clip(wave, -1.0, 1.0), sr)
         written[name] = path
+
+    # 伴奏だけの音は分離の副産物。声を抜いた結果が妥当かは、これを聴けば分かる
+    if context.instrumental and Path(context.instrumental).is_file():
+        karaoke, ksr = librosa.load(context.instrumental, sr=None, mono=False, duration=duration)
+        path = out_dir / "karaoke.wav"
+        sf.write(path, karaoke.T if karaoke.ndim > 1 else karaoke, ksr)
+        written["karaoke"] = path
+
     return written
 
 
@@ -175,15 +193,9 @@ def main(argv: list[str] | None = None) -> int:
     print()
 
     written = write_all(args.audio, args.out, context=context, duration=args.duration)
-    labels = {
-        "beats": "拍とテンポが合っているか（クリックが曲に乗っているか）",
-        "chords": "コードが合っているか（パッドが原曲とぶつからないか）",
-        "melody": "主旋律が合っているか（原曲の旋律をなぞっているか）",
-        "melody_solo": "主旋律だけ",
-    }
     print("聴いて確かめてください:")
     for name, path in written.items():
-        print(f"  {path}  … {labels[name]}")
+        print(f"  {path}  … {TRACK_LABELS.get(name, name)}")
     return 0
 
 

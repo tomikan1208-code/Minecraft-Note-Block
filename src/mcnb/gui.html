@@ -276,6 +276,7 @@ async function refresh() {
 
   const TRACKS = {
     beats: '拍とテンポ', chords: 'コード', melody: '主旋律', melody_solo: '主旋律だけ',
+    karaoke: 'カラオケ（声を抜いた伴奏）',
   };
   $('#analyses').innerHTML = s.analyses.length ? s.analyses.slice().reverse().map(a => `
     <div class="card">

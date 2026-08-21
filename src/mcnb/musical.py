@@ -70,9 +70,15 @@ CHORD_TEMPLATES: dict[str, tuple[tuple[int, ...], float]] = {
 CHORD_SELF_BONUS = 0.22
 #: 調に収まるコードへのおまけ。構成音が全部調内なら満額
 DIATONIC_BONUS = 0.10
-#: これ未満の相関なら「コードなし」とみなす。はっきりしない箇所に
-#: 無理やり名前を付けるより、付けないほうが後段で害が少ない。
-NO_CHORD_THRESHOLD = 0.55
+#: 調を決めるとき、コード進行との整合をクロマの偏りに対してどれだけ重く見るか。
+#: クロマだけでは平行調・同主調が決まらないので、ここが要る。
+KEY_CHORD_WEIGHT = 0.6
+#: 「コードなし」と判断する境目。**曲ごとの手応えの中央値に対する比**で決める。
+#: 絶対値で決めると曲をまたげない。0.55 固定で測ると、真っ黒ピアノでは 6% が N
+#: なのに歌ものでは 31% が N になった — 曲全体の相関の高さが編成や音の混み具合で
+#: 変わるだけで、「コードが無い」かどうかとは関係がない。
+#: 中央値比にすると両方 2〜5% に揃う。
+NO_CHORD_RATIO = 0.63
 
 #: 主旋律を探す音域
 MELODY_LO_MIDI = 48   # C3
@@ -85,8 +91,17 @@ MELODY_JUMP_PENALTY = 0.25
 MELODY_VOICING_PENALTY = 0.6
 #: これ以下の強さしかないフレームは「鳴っていない」とみなす（全体最大からの dB）
 MELODY_FLOOR_DB = -36.0
-#: 高い声部を主旋律とみなす度合い。0 で音域による贔屓なし
+#: 高い声部を主旋律とみなす度合い。0 で音域による贔屓なし。
+#: 多声の中から旋律を選ぶときは、これが無いと一番大きいベースを拾ってしまう。
+#: ただし**単声（分離したボーカル）には有害**。避けるべき低音が無いのに
+#: 高いほうへ引っぱるので、そのままオクターブずれになる。
+#: 分離したボーカルで実測: 下駄 0.35 で pyin と一致 37%(1oct ずれ 13%)、
+#: 下駄 0.00 で一致 72%(1oct ずれ 1%)。
 MELODY_HIGH_BIAS = 0.35
+#: 単声の音源から取るときの下駄
+MELODY_HIGH_BIAS_MONO = 0.0
+#: 声トラックがこれ未満の音量しか無ければ「ボーカル無し」とみなす（原音との比）
+VOCAL_PRESENCE_RATIO = 0.05
 
 
 @dataclass(frozen=True)
@@ -150,6 +165,10 @@ class MusicalContext:
     #: 主旋律。(秒, MIDIノート番号)。鳴っていない区間は入らない
     melody: list[tuple[float, float]] = field(default_factory=list)
     duration: float = 0.0
+    #: 主旋律をどこから取ったか。"vocals"（分離した声）か "mix"（混ざったまま）
+    melody_source: str = "mix"
+    #: 伴奏だけの音（カラオケ）。分離したときだけ入る
+    instrumental: str | None = None
 
     # -- 問い合わせ ------------------------------------------------------- #
 
@@ -208,6 +227,7 @@ class MusicalContext:
                 f"コード  : {len(self.chords)} 区間 / 異なり {len(set(c.name for c in self.chords))} 種",
                 f"  進行  : {' → '.join(uniq[:20])}" + (" …" if len(uniq) > 20 else ""),
                 f"主旋律  : {melody_seconds:.1f} 秒ぶん ({share:.0f}%)"
+                + ("  ← 分離した声から" if self.melody_source == "vocals" else "  ← 混ざったまま")
                 + (
                     f"  音域 {_midi_name(min(p for _, p in self.melody))}"
                     f"〜{_midi_name(max(p for _, p in self.melody))}"
@@ -226,6 +246,8 @@ class MusicalContext:
             "key": ({**asdict(self.key), "name": self.key.name} if self.key else None),
             "chords": [{**asdict(c), "name": c.name} for c in self.chords],
             "melody": [[t, p] for t, p in self.melody],
+            "melody_source": self.melody_source,
+            "instrumental": self.instrumental,
         }
 
 
@@ -325,14 +347,49 @@ def chord_chroma(harmonic: np.ndarray, sr: int) -> np.ndarray:
     return librosa.feature.chroma_cqt(y=harmonic, sr=sr, hop_length=HOP)
 
 
-def estimate_key(chroma: np.ndarray) -> Key:
-    """クロマ全体の傾きから調を当てる（Krumhansl-Schmuckler）。"""
+def _scale_of(tonic: int, minor: bool) -> set[int]:
+    steps = MINOR_SCALE if minor else MAJOR_SCALE
+    return {(tonic + s) % 12 for s in steps}
+
+
+def _chord_agreement(tonic: int, minor: bool, chords: list[Chord]) -> float:
+    """その調のとき、コード進行のどれだけの時間が調内に収まるか。"""
+    scale = _scale_of(tonic, minor)
+    dominant = (tonic + 7) % 12 if minor else None
+    inside = total = 0.0
+    for chord in chords:
+        if chord.root < 0:
+            continue
+        span = chord.end - chord.start
+        total += span
+        allowed = scale
+        if dominant is not None and chord.root == dominant and chord.quality in ("", "7"):
+            allowed = scale | {(tonic + LEADING_TONE) % 12}
+        if all(pc in allowed for pc in chord.pitch_classes):
+            inside += span
+    return inside / total if total else 0.0
+
+
+def estimate_key(chroma: np.ndarray, chords: list[Chord] | None = None) -> Key:
+    """調を当てる。
+
+    クロマ全体の傾きだけ（Krumhansl-Schmuckler）だと、**平行調と同主調を
+    取り違える**。平行調（Dm と F）は構成音がまったく同じだし、同主調
+    （G と Gm）も差は 3 音しかないので、統計だけでは決まらない。
+
+    ``chords`` を渡すと、コード進行がその調にどれだけ収まるかも見る。
+    Gm・Cm・B♭ が並んでいるなら G メジャーではなく G マイナー、という判断ができる。
+    """
     profile = chroma.mean(axis=1)
     profile = profile - profile.mean()
     norm = np.linalg.norm(profile)
     if norm < 1e-9:
-        return Key(tonic=0, minor=False, confidence=0.0)
-    profile = profile / norm
+        # クロマに偏りが無い。コードが分かっていればそれだけで決める
+        if not chords:
+            return Key(tonic=0, minor=False, confidence=0.0)
+        profile = np.zeros(12, dtype=np.float32)
+    else:
+        profile = profile / norm
 
     best = (0, False, -2.0)
     for minor, template in ((False, MAJOR_PROFILE), (True, MINOR_PROFILE)):
@@ -340,6 +397,8 @@ def estimate_key(chroma: np.ndarray) -> Key:
         centred = centred / np.linalg.norm(centred)
         for tonic in range(12):
             score = float(profile @ np.roll(centred, tonic))
+            if chords:
+                score += KEY_CHORD_WEIGHT * _chord_agreement(tonic, minor, chords)
             if score > best[2]:
                 best = (tonic, minor, score)
     return Key(tonic=best[0], minor=best[1], confidence=best[2])
@@ -430,8 +489,10 @@ def estimate_chords(chroma: np.ndarray, beats: np.ndarray, sr: int, key: Key | N
     scores = templates @ synced + prior[:, None]     # (状態数, 拍数)
 
     # 「コードなし」も同じ土俵で競わせる。均したあとで足切りすると、
-    # せっかく繋がったコードが N と交互になってちらつく
-    scores = np.vstack([scores, np.full((1, scores.shape[1]), NO_CHORD_THRESHOLD, dtype=scores.dtype)])
+    # せっかく繋がったコードが N と交互になってちらつく。
+    # 高さはこの曲自身の手応えから決める（曲をまたいで同じ意味になるように）
+    no_chord = NO_CHORD_RATIO * float(np.median(scores.max(axis=0)))
+    scores = np.vstack([scores, np.full((1, scores.shape[1]), no_chord, dtype=scores.dtype)])
     labels = labels + [(-1, "")]
 
     path = _viterbi(scores.T, CHORD_SELF_BONUS)
@@ -503,13 +564,20 @@ def _salience(y: np.ndarray, sr: int) -> tuple[np.ndarray, np.ndarray]:
     return salience, pitches
 
 
-def extract_melody(y: np.ndarray, sr: int) -> list[tuple[float, float]]:
+def extract_melody(
+    y: np.ndarray, sr: int, high_bias: float | None = None
+) -> list[tuple[float, float]]:
     """主旋律らしい単旋律を取り出す。
 
     多声の中から旋律を選ぶので、各フレームで一番強い音を取るだけでは
     低音（たいてい一番大きい）に引きずられ、しかも音がぶつ切りになる。
     そこで **滑らかに繋がること** を条件に、全体で一番よい経路を選ぶ。
+
+    ``high_bias`` は高い声部をどれだけ贔屓するか。単声の音源を渡すときは
+    ``MELODY_HIGH_BIAS_MONO``（＝0）にすること。既定は多声向け。
     """
+    if high_bias is None:
+        high_bias = MELODY_HIGH_BIAS
     import librosa
 
     salience, pitches = _salience(y, sr)
@@ -522,8 +590,9 @@ def extract_melody(y: np.ndarray, sr: int) -> list[tuple[float, float]]:
     emission = np.clip(db, MELODY_FLOOR_DB * 2, 0.0) / -MELODY_FLOOR_DB  # おおむね -2..0
 
     # 主旋律は上の声部にあることが多いので、高いほうに軽く下駄を履かせる
-    high = (pitches - pitches[0]) / max(pitches[-1] - pitches[0], 1)
-    emission += MELODY_HIGH_BIAS * high[:, None]
+    if high_bias:
+        high = (pitches - pitches[0]) / max(pitches[-1] - pitches[0], 1)
+        emission += high_bias * high[:, None]
 
     n_pitch, n_frames = emission.shape
     # 最後の状態が「鳴っていない」。emission は 0（＝床すれすれ）を割り当てる
@@ -560,22 +629,61 @@ def extract_melody(y: np.ndarray, sr: int) -> list[tuple[float, float]]:
 # --------------------------------------------------------------------------- #
 
 
+def _load_stems(path: Path, duration: float | None, say) -> tuple[np.ndarray | None, Path | None]:
+    """声と伴奏に分ける。分けられなければ ``(None, None)``。
+
+    声トラックがほぼ無音なら「ボーカル無し」とみなして ``None`` を返す。
+    インスト曲に対して分離の残りかすを主旋律として追いかけても意味がない。
+    """
+    import librosa
+
+    from . import stems as stems_mod
+
+    try:
+        result = stems_mod.separate(path, verbose=False)
+    except stems_mod.StemError as e:
+        say(f"分離できませんでした（混ざったまま進みます）: {e}")
+        return None, None
+
+    vocals, _ = librosa.load(str(result.vocals), sr=ANALYSIS_RATE, mono=True, duration=duration)
+    mix, _ = librosa.load(str(path), sr=ANALYSIS_RATE, mono=True, duration=duration)
+    level = float(np.sqrt(np.mean(vocals**2))) / max(float(np.sqrt(np.mean(mix**2))), 1e-9)
+    if level < VOCAL_PRESENCE_RATIO:
+        say(f"ボーカルは入っていないようです（声の音量比 {level:.1%}）")
+        return None, result.instrumental
+    say(f"ボーカルを分離しました（声の音量比 {level:.0%}）")
+    return vocals, result.instrumental
+
+
 def analyze(
     path: Path | str,
     duration: float | None = None,
     melody: bool = True,
+    stems: bool = True,
     verbose: bool = False,
 ) -> MusicalContext:
-    """原音を解析して文脈を返す。"""
+    """原音を解析して文脈を返す。
+
+    ``stems=True`` なら声と伴奏に分けてから解析する。歌ものでは
+    **混ざったままだと主旋律が伴奏を追いかけてしまう**ので、これが要る。
+    """
     import librosa
 
     def say(message: str) -> None:
         if verbose:
             print(f"  {message}", flush=True)
 
+    path = Path(path)
     say("読み込み中…")
     y, sr = librosa.load(str(path), sr=ANALYSIS_RATE, mono=True, duration=duration)
 
+    vocals: np.ndarray | None = None
+    instrumental: Path | None = None
+    if stems and melody:
+        say("声と伴奏に分けています…")
+        vocals, instrumental = _load_stems(path, duration, say)
+
+    # 拍は原音から取る。分離すると打楽器が痩せて、かえって取りにくくなる
     say("拍を取っています…")
     tempo, beat_frames = track_beats(y, sr)
     beats = librosa.frames_to_time(beat_frames, sr=sr, hop_length=HOP)
@@ -584,13 +692,28 @@ def analyze(
     say("コードを推定しています…")
     harmonic = separate_harmonic(y)
     chroma = chord_chroma(harmonic, sr)
+
+    # 一度コードを出してから、それを証拠にして調を決め直す。
+    # 調が変わればコードの下駄も変わるので、もう一度だけ回す。
     key = estimate_key(chroma)
     chords = estimate_chords(chroma, beats, sr, key)
+    refined = estimate_key(chroma, chords)
+    if (refined.tonic, refined.minor) != (key.tonic, key.minor):
+        say(f"調を {key.name} から {refined.name} に見直しました（コード進行から）")
+        key = refined
+        chords = estimate_chords(chroma, beats, sr, key)
 
     melody_line: list[tuple[float, float]] = []
+    melody_source = "mix"
     if melody:
-        say("主旋律を追っています…")
-        melody_line = extract_melody(harmonic, sr)
+        if vocals is not None:
+            say("主旋律を追っています（分離した声から）…")
+            # 単声なので高音への下駄は要らない。付けるとオクターブずれる
+            melody_line = extract_melody(vocals, sr, high_bias=MELODY_HIGH_BIAS_MONO)
+            melody_source = "vocals"
+        else:
+            say("主旋律を追っています…")
+            melody_line = extract_melody(harmonic, sr)
 
     return MusicalContext(
         tempo=tempo,
@@ -600,6 +723,8 @@ def analyze(
         chords=chords,
         melody=melody_line,
         duration=len(y) / sr,
+        melody_source=melody_source,
+        instrumental=str(instrumental) if instrumental else None,
     )
 
 
@@ -612,10 +737,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("audio")
     ap.add_argument("--duration", type=float, default=None, help="先頭の秒数だけ解析する")
     ap.add_argument("--no-melody", action="store_true", help="主旋律の抽出を省く（速い）")
+    ap.add_argument("--no-stems", action="store_true", help="声と伴奏に分けずに解析する")
     ap.add_argument("--json", type=Path, default=None, help="結果を JSON に保存")
     args = ap.parse_args(argv)
 
-    context = analyze(args.audio, duration=args.duration, melody=not args.no_melody, verbose=True)
+    context = analyze(args.audio, duration=args.duration, melody=not args.no_melody,
+                      stems=not args.no_stems, verbose=True)
     print()
     print(context.summary())
 

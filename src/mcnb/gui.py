@@ -158,7 +158,7 @@ def collect_state() -> dict:
 
 
 #: 確認用 wav の並び順。聴く順番でもある（拍が合っていなければ他は見るまでもない）
-ANALYSIS_TRACKS = ("beats", "chords", "melody", "melody_solo")
+ANALYSIS_TRACKS = ("beats", "chords", "melody", "melody_solo", "karaoke")
 
 
 def collect_analyses(root: Path) -> list[dict]:

@@ -192,3 +192,114 @@ def test_chord_lookup_matches_linear_scan(analysed):
     for t in np.arange(0.0, analysed["duration"], 0.037):
         expected = next((c for c in analysed["chords"] if c.start <= t < c.end), None)
         assert context.chord_at(float(t)) is expected, f"{t:.3f}s"
+
+
+# --------------------------------------------------------------------------- #
+# 曲をまたいでも同じ意味になるか
+# --------------------------------------------------------------------------- #
+
+
+def _muddy(audio: np.ndarray) -> np.ndarray:
+    """和音の手応えを落とした版を作る。
+
+    実曲では編成や音の混み具合で、クロマとコードの相関の高さがそもそも違う。
+    真っ黒ピアノでは中央値 0.73、歌ものでは 0.62 だった。しきい値を絶対値で
+    決めると、この差だけで「コードなし」の割合が 6% と 31% に割れてしまう。
+    """
+    rng = np.random.default_rng(1)
+    noise = rng.normal(0, 1, len(audio)).astype(np.float32)
+    # 低域寄りの雑音にする。白色雑音はクロマにあまり効かない
+    noise = np.convolve(noise, np.ones(64, dtype=np.float32) / 64, mode="same")
+    return audio * 0.7 + noise / max(np.max(np.abs(noise)), 1e-9) * 0.3
+
+
+def _no_chord_share(audio: np.ndarray) -> tuple[float, float]:
+    """(コードなしの時間の割合, 手応えの中央値) を返す。"""
+    import librosa
+
+    _, beat_frames = M.track_beats(audio, SR)
+    beats = librosa.frames_to_time(beat_frames, sr=SR, hop_length=M.HOP)
+    chroma = M.chord_chroma(M.separate_harmonic(audio), SR)
+    key = M.estimate_key(chroma)
+    chords = M.estimate_chords(chroma, beats, SR, key)
+
+    total = sum(c.end - c.start for c in chords)
+    none = sum(c.end - c.start for c in chords if c.root < 0)
+    clarity = float(np.median([c.confidence for c in chords if c.root >= 0] or [0.0]))
+    return none / max(total, 1e-9), clarity
+
+
+def test_no_chord_share_survives_a_muddier_mix():
+    """和音がぼやけた音源でも「コードなし」だらけにならないこと。
+
+    ここが絶対値のしきい値だと、手応えが下がっただけで全部 N に落ちる。
+    曲ごとの手応えに対する比で決めているので、割合は保たれるはず。
+    """
+    audio, _, _ = synth()
+    clean_share, clean_clarity = _no_chord_share(audio)
+    muddy_share, muddy_clarity = _no_chord_share(_muddy(audio))
+
+    assert muddy_clarity < clean_clarity, (
+        f"濁らせたのに手応えが落ちていない（{clean_clarity:.2f} → {muddy_clarity:.2f}）— 前提が崩れている"
+    )
+    assert muddy_share <= 0.25, f"濁らせたら N が {muddy_share:.0%} まで増えた"
+
+
+def test_key_uses_the_chord_progression_to_break_the_tie():
+    """平行調・同主調はクロマだけでは決まらないので、コード進行で決めること。
+
+    Cm / Fm / G / Cm は C マイナー。構成音の統計だけでは E♭ メジャーとも
+    C メジャーとも読めてしまう。
+    """
+    flat = np.ones((12, 8), dtype=np.float32)   # 偏りなし＝クロマからは何も分からない
+    progression = [
+        M.Chord(start=i * 2.0, end=i * 2.0 + 2.0, root=root, quality=quality, confidence=1.0)
+        for i, (root, quality) in enumerate([(0, "m"), (5, "m"), (7, ""), (0, "m")])
+    ]
+    key = M.estimate_key(flat, progression)
+    assert (key.tonic, key.minor) == (0, True), f"{key.name} と判定された"
+
+
+# --------------------------------------------------------------------------- #
+# 単声の音源（分離したボーカル）
+# --------------------------------------------------------------------------- #
+
+
+#: 基音が倍音より弱い声。ミックスで低域を削られた歌はこうなる。
+#: 基音がしっかりしていれば下駄があっても倍音に負けないので、この条件でないと
+#: 実際に起きたオクターブずれを再現できない。
+THIN_VOICE = (0.3, 1.0, 0.8, 0.5, 0.3)
+
+
+def _monophonic(notes: list[int], harmonics: tuple[float, ...] = THIN_VOICE) -> np.ndarray:
+    """伴奏なしの単旋律。分離したボーカルの代わり。"""
+    length = int(BEAT * SR)
+    audio = np.zeros(length * len(notes), dtype=np.float32)
+    for i, note in enumerate(notes):
+        audio[i * length : (i + 1) * length] = _voice(note, length, harmonics)
+    return audio / np.max(np.abs(audio)) * 0.9
+
+
+def test_high_bias_causes_octave_errors_on_a_monophonic_source():
+    """単声には高音への下駄を履かせないこと。
+
+    下駄は多声の中で「一番大きいベース」を避けるためのもの。避けるべき低音が
+    無い単声では、ただ倍音のほうへ引っぱるだけでオクターブずれになる。
+    """
+    notes = [60, 62, 64, 65, 67, 65, 64, 62, 60, 64, 67, 64]
+    audio = _monophonic(notes)
+
+    def octave_error(bias: float) -> float:
+        melody = M.extract_melody(audio, SR, high_bias=bias)
+        assert melody, f"下駄 {bias} で主旋律が取れなかった"
+        wrong = 0
+        for t, pitch in melody:
+            want = notes[min(int(t / BEAT), len(notes) - 1)]
+            if abs(pitch - want) > 1.5:
+                wrong += 1
+        return wrong / len(melody)
+
+    with_bias = octave_error(M.MELODY_HIGH_BIAS)
+    without = octave_error(M.MELODY_HIGH_BIAS_MONO)
+    assert without < with_bias, f"下駄あり {with_bias:.0%} / なし {without:.0%} — 差が出ていない"
+    assert without <= 0.15, f"下駄なしでも {without:.0%} 外している"

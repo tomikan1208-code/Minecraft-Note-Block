@@ -355,7 +355,8 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
     out = Path(args.out) / (args.name or src.stem)
     print(f"■ 解析: {src.name}")
-    context = musical.analyze(src, duration=args.duration, melody=not args.no_melody, verbose=True)
+    context = musical.analyze(src, duration=args.duration, melody=not args.no_melody,
+                              stems=not args.no_stems, verbose=True)
     print()
     print(context.summary())
 
@@ -370,15 +371,10 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
     print("\n■ 音にしています…")
     written = sonify.write_all(src, out, context=context, duration=args.duration)
-    labels = {
-        "beats": "拍とテンポ（クリックが曲に乗っているか）",
-        "chords": "コード（パッドが原曲とぶつからないか）",
-        "melody": "主旋律（原曲の旋律をなぞっているか）",
-        "melody_solo": "主旋律だけ",
-    }
+    labels = sonify.TRACK_LABELS
     print("\n聴いて確かめてください:")
     for name, path in written.items():
-        print(f"  {path}  … {labels[name]}")
+        print(f"  {path}  … {labels.get(name, name)}")
     return 0
 
 
@@ -521,6 +517,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", default="out/analysis")
     p.add_argument("--duration", type=float, default=None, help="先頭の秒数だけ解析する")
     p.add_argument("--no-melody", action="store_true", help="主旋律の抽出を省く（速い）")
+    p.add_argument("--no-stems", action="store_true", help="声と伴奏に分けずに解析する")
     p.add_argument("--no-sonify", action="store_true", help="確認用 wav を書き出さない")
     p.set_defaults(func=cmd_analyze)
 
