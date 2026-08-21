@@ -99,6 +99,7 @@ def build_one(
     spacing: int = layout.SPACING,
     max_polyphony: int = 200,
     verbose: bool = True,
+    arrange_config=None,
 ) -> BuildResult:
     """1つの入力を最後まで通す。CLI からもテストランナーからも使う。"""
     name = name or src.stem
@@ -121,6 +122,13 @@ def build_one(
         print("\n■ 演奏データ")
         print(song.summarize(tune))
 
+    if arrange_config is not None:
+        from . import arrange as arrange_mod
+        tune, arrange_config = arrange_mod.arrange(tune, arrange_config)
+        if verbose:
+            print("\n■ 編曲")
+            print(arrange_mod.summarize(arrange_config))
+
     lay = layout.build_layout(tune, origin=origin, spacing=spacing, max_polyphony=max_polyphony)
     if verbose:
         print("\n■ Minecraft 空間に配置（直線コリドー）")
@@ -132,6 +140,15 @@ def build_one(
         print(datapack.summarize(pack))
 
     return BuildResult(name=name, song=tune, layout=lay, pack=pack, nbs=nbs_path)
+
+
+def _arrange_config(args: argparse.Namespace):
+    """``--concurrent`` が指定されたときだけ編曲を掛ける。"""
+    if not getattr(args, "concurrent", 0):
+        return None
+    from . import arrange as arrange_mod
+
+    return arrange_mod.ArrangeConfig(max_concurrent=args.concurrent)
 
 
 def cmd_build(args: argparse.Namespace) -> int:
@@ -154,6 +171,7 @@ def cmd_build(args: argparse.Namespace) -> int:
             origin=tuple(args.origin),
             spacing=args.spacing,
             max_polyphony=args.max_polyphony,
+            arrange_config=_arrange_config(args),
         )
     except (ValueError, RuntimeError) as e:
         print(f"エラー: {e}", file=sys.stderr)
@@ -271,7 +289,8 @@ def cmd_render(args: argparse.Namespace) -> int:
     try:
         src, _ = resolve_input(args.input)
         r = build_one(src, Path(args.out), name=args.name,
-                      max_polyphony=args.max_polyphony, verbose=False)
+                      max_polyphony=args.max_polyphony, verbose=False,
+                      arrange_config=_arrange_config(args))
 
         model = render.AcousticModel(polyphony=args.polyphony)
         if args.measurements and Path(args.measurements).is_file():
@@ -385,6 +404,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--spacing", type=int, default=layout.SPACING, help="1 tick あたりの X ブロック数")
     p.add_argument("--max-polyphony", type=int, default=200,
                    help="1 tick の最大同時発音（バニラ247 / RSLS導入なら4095まで）")
+    p.add_argument("--concurrent", type=int, default=0, metavar="N",
+                   help="編曲: 同時に鳴っている音を N 個までに抑える（0 で編曲なし）")
     p.add_argument("--install", default=None, metavar="DIR",
                    help="書き出したあとこのディレクトリにコピー（<world>/datapacks）")
     p.add_argument("--world", default=None, metavar="NAME",
@@ -415,6 +436,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--name", default=None)
     p.add_argument("--out", default="out")
     p.add_argument("--max-polyphony", type=int, default=200, help="配置時の同時発音上限")
+    p.add_argument("--concurrent", type=int, default=0, metavar="N",
+                   help="編曲: 同時に鳴っている音を N 個までに抑える（0 で編曲なし）")
     p.add_argument("--polyphony", type=int, default=247, help="再生時の上限（バニラ247 / RSLS4095）")
     p.add_argument("--measurements", default="out/measure/measurements.json",
                    help="実測から音響モデルを較正する")

@@ -403,6 +403,17 @@ def compare(original: Path, rendered: Path, seconds: float = 30.0) -> dict:
         librosa.feature.spectral_centroid(y=b, sr=sr, hop_length=hop)[0],
     )
 
+    # ノイズらしさ。スペクトルが平坦なほど「音」ではなく「雑音」に近い。
+    # 音符を撒き散らすと平坦になるので、「パレイドリア」を直接測れる
+    fa = float(np.mean(librosa.feature.spectral_flatness(y=a, hop_length=hop)))
+    fb = float(np.mean(librosa.feature.spectral_flatness(y=b, hop_length=hop)))
+
+    # 倍音らしさ。音程がはっきりした音が鳴っていれば chroma のピークが立つ。
+    # 撒き散らすと全ピッチクラスに散らばって平らになる
+    def _peakiness(chroma: np.ndarray) -> float:
+        col = chroma / np.maximum(chroma.sum(axis=0, keepdims=True), 1e-9)
+        return float(np.mean(col.max(axis=0)))
+
     # 帯域ごとのエネルギー比。どこが足りない/多すぎるかを直接見る
     freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
     sa = np.abs(librosa.stft(a, n_fft=2048, hop_length=hop))
@@ -422,6 +433,9 @@ def compare(original: Path, rendered: Path, seconds: float = 30.0) -> dict:
         "onset": round(onset, 3),
         "loudness": round(loudness, 3),
         "centroid": round(centroid, 3),
+        "flatness": {"原曲": round(fa, 4), "MC版": round(fb, 4),
+                     "比": round(fb / fa, 2) if fa > 1e-9 else None},
+        "peakiness": {"原曲": round(_peakiness(ca), 3), "MC版": round(_peakiness(cb), 3)},
         "bands": bands,
     }
 
@@ -432,6 +446,11 @@ def format_compare(result: dict) -> str:
         f"  リズム (onset)    {result['onset']:+.3f}",
         f"  強弱 (loudness)   {result['loudness']:+.3f}",
         f"  明るさ (centroid) {result['centroid']:+.3f}",
+        "",
+        f"  雑音らしさ (flatness)  原曲 {result['flatness']['原曲']:.4f} / "
+        f"MC版 {result['flatness']['MC版']:.4f}  = {result['flatness']['比']}倍",
+        f"  音程のはっきりさ       原曲 {result['peakiness']['原曲']:.3f} / "
+        f"MC版 {result['peakiness']['MC版']:.3f}",
         "",
         "  帯域エネルギー比 (MC版 / 原曲):",
     ]
