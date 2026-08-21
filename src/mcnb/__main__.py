@@ -179,13 +179,23 @@ def build_one(
     return BuildResult(name=name, song=tune, layout=lay, pack=pack, nbs=nbs_path)
 
 
+#: 同時に鳴らす音の上限の既定値。生成のたびに --concurrent で変えられる。
+#: 上限を外す（--concurrent 0）と、音楽的な取捨だけが効いて重なりは制限しない。
+DEFAULT_CONCURRENT = 60
+
+
 def _arrange_config(args: argparse.Namespace):
-    """``--concurrent`` が指定されたときだけ編曲を掛ける。"""
-    if not getattr(args, "concurrent", 0):
-        return None
+    """編曲の設定を作る。
+
+    以前は ``--concurrent`` を指定したときだけ編曲していたが、そうすると
+    **既定では音色の割り当ても強弱も効かない**。編曲は常に掛けて、
+    重なりの上限だけを指定で変えられるようにする。``--no-arrange`` で全部切れる。
+    """
     from . import arrange as arrange_mod
 
-    return arrange_mod.ArrangeConfig(max_concurrent=args.concurrent)
+    if getattr(args, "no_arrange", False):
+        return None
+    return arrange_mod.ArrangeConfig(max_concurrent=getattr(args, "concurrent", DEFAULT_CONCURRENT))
 
 
 #: 原音として扱う拡張子
@@ -499,8 +509,9 @@ def main(argv: list[str] | None = None) -> int:
                         "既定は曲の密度から自動。0.365 = スプリント+速度II")
     p.add_argument("--max-polyphony", type=int, default=200,
                    help="1 tick の最大同時発音（バニラ247 / RSLS導入なら4095まで）")
-    p.add_argument("--concurrent", type=int, default=0, metavar="N",
-                   help="編曲: 同時に鳴っている音を N 個までに抑える（0 で編曲なし）")
+    p.add_argument("--concurrent", type=int, default=DEFAULT_CONCURRENT, metavar="N",
+                   help=f"同時に鳴っている音を N 個までに抑える（既定 {DEFAULT_CONCURRENT} / 0 で無制限）")
+    p.add_argument("--no-arrange", action="store_true", help="編曲を一切掛けない（採譜そのまま）")
     p.add_argument("--install", default=None, metavar="DIR",
                    help="書き出したあとこのディレクトリにコピー（<world>/datapacks）")
     p.add_argument("--world", default=None, metavar="NAME",
@@ -532,8 +543,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--name", default=None)
     p.add_argument("--out", default="out")
     p.add_argument("--max-polyphony", type=int, default=200, help="配置時の同時発音上限")
-    p.add_argument("--concurrent", type=int, default=0, metavar="N",
-                   help="編曲: 同時に鳴っている音を N 個までに抑える（0 で編曲なし）")
+    p.add_argument("--concurrent", type=int, default=DEFAULT_CONCURRENT, metavar="N",
+                   help=f"同時に鳴っている音を N 個までに抑える（既定 {DEFAULT_CONCURRENT} / 0 で無制限）")
+    p.add_argument("--no-arrange", action="store_true", help="編曲を一切掛けない（採譜そのまま）")
     p.add_argument("--polyphony", type=int, default=247, help="再生時の上限（バニラ247 / RSLS4095）")
     p.add_argument("--measurements", default="out/measure/measurements.json",
                    help="実測から音響モデルを較正する")
@@ -574,8 +586,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", default="out/verify")
     p.add_argument("--sample", type=int, default=24, help="ブロックを確認する箇所の数")
     p.add_argument("--max-polyphony", type=int, default=200)
-    p.add_argument("--concurrent", type=int, default=0, metavar="N",
-                   help="編曲: 同時に鳴っている音を N 個までに抑える（0 で編曲なし）")
+    p.add_argument("--concurrent", type=int, default=DEFAULT_CONCURRENT, metavar="N",
+                   help=f"同時に鳴っている音を N 個までに抑える（既定 {DEFAULT_CONCURRENT} / 0 で無制限）")
+    p.add_argument("--no-arrange", action="store_true", help="編曲を一切掛けない（採譜そのまま）")
     p.add_argument("--refresh", action="store_true", help="採譜をやり直す")
     p.add_argument("--memory", default="2G")
     p.set_defaults(func=cmd_verify)
