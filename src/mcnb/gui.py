@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
 import subprocess
 import sys
 import time
@@ -234,8 +233,16 @@ def create_app():
     return app
 
 
-def serve(host: str = HOST, port: int = PORT, open_browser: bool = True) -> None:
+def serve(host: str = HOST, port: int = PORT, open_browser: bool = True,
+          restart: bool = True) -> None:
     import uvicorn
+
+    if restart:
+        # 前回の GUI が残っているとポートが埋まって起動できない。
+        # 検証・測定で立てた Minecraft サーバも一緒に片付ける
+        from . import procs
+
+        procs.cleanup(ports=[port, procs.SERVER_PORT, procs.RCON_PORT])
 
     app = create_app()
     url = f"http://{host}:{port}/"
@@ -259,11 +266,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--host", default=HOST)
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--keep-stale", action="store_true",
+                    help="前回の残骸を止めずに起動する")
     args = ap.parse_args(argv)
 
-    if shutil.which("ffmpeg") is None:
-        pass  # imageio-ffmpeg で代替できるので黙っておく
-    serve(args.host, args.port, open_browser=not args.no_browser)
+    serve(args.host, args.port, open_browser=not args.no_browser,
+          restart=not args.keep_stale)
     return 0
 
 

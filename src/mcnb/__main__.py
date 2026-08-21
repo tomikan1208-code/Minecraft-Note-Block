@@ -326,7 +326,8 @@ def cmd_gui(args: argparse.Namespace) -> int:
     """1画面から全部やる GUI を立てる。"""
     from . import gui
 
-    gui.serve(args.host, args.port, open_browser=not args.no_browser)
+    gui.serve(args.host, args.port, open_browser=not args.no_browser,
+              restart=not args.keep_stale)
     return 0
 
 
@@ -338,6 +339,9 @@ def cmd_measure(args: argparse.Namespace) -> int:
         ok, message = audio.selftest()
         print(("OK  " if ok else "NG  ") + message)
         return 0 if ok else 1
+
+    from . import procs
+    procs.cleanup(ports=[procs.SERVER_PORT, procs.RCON_PORT])
 
     try:
         report = measure.run(
@@ -449,6 +453,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8770)
     p.add_argument("--no-browser", action="store_true")
+    p.add_argument("--keep-stale", action="store_true", help="前回の残骸を止めずに起動する")
     p.set_defaults(func=cmd_gui)
 
     p = sub.add_parser("measure", help="実機測定リグ（要クライアント接続）")
