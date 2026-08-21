@@ -117,12 +117,28 @@ def build_one(
     arrange_config=None,
     move: str = "vehicle",
     refresh: bool = False,
+    source: str = "mix",
 ) -> BuildResult:
     """1つの入力を最後まで通す。CLI からもテストランナーからも使う。"""
     name = name or src.stem
     out = out_root / name
     out.mkdir(parents=True, exist_ok=True)
-    nbs_path = out / f"{name}.nbs"
+
+    # 採譜に使う音を選ぶ。既定は原音（ボーカル込み）。
+    # instrumental を選ぶと、声を抜いた伴奏だけを音符にする
+    original = src
+    if source == "instrumental" and src.suffix.lower() in AUDIO_SUFFIXES:
+        from . import stems as stems_mod
+
+        if verbose:
+            print("\n■ 声と伴奏に分ける（伴奏だけを採譜する）")
+        try:
+            src = stems_mod.separate(src, verbose=verbose).instrumental
+        except stems_mod.StemError as e:
+            print(f"  分離できませんでした（原音のまま進みます）: {e}", file=sys.stderr)
+
+    suffix = "" if source == "mix" else f"_{source}"
+    nbs_path = out / f"{name}{suffix}.nbs"
 
     if src.suffix.lower() == ".nbs":
         if nbs_path.resolve() != src.resolve():
@@ -152,19 +168,19 @@ def build_one(
 
         # 原音があるなら解析して渡す。どの音を残すかを音量ではなく
         # 音楽的な役割（主旋律・コードの構成音・低音）で決められるようになる
-        if arrange_config.context is None and src.suffix.lower() in AUDIO_SUFFIXES:
+        if arrange_config.context is None and original.suffix.lower() in AUDIO_SUFFIXES:
             from . import musical as musical_mod
 
             if verbose:
                 print("\n■ 原音を読み解く（拍・調・コード・主旋律）")
-            arrange_config.context = musical_mod.analyze_cached(src, verbose=verbose)
+            arrange_config.context = musical_mod.analyze_cached(original, verbose=verbose)
             if verbose:
                 print(arrange_config.context.summary())
 
             # 採譜の時間軸は原音とずれる。ずれたまま突き合わせると、別の時刻の音を
             # 主旋律とみなして大きくしてしまう（実測で -93ms 〜 +372ms）
             offset, score = musical_mod.estimate_offset(
-                [(e.tick / 20.0, e.midi, e.velocity) for e in tune.events], src
+                [(e.tick / 20.0, e.midi, e.velocity) for e in tune.events], original
             )
             arrange_config.time_offset = offset
             if verbose:
@@ -204,7 +220,11 @@ def _arrange_config(args: argparse.Namespace):
 
     if getattr(args, "no_arrange", False):
         return None
-    return arrange_mod.ArrangeConfig(max_concurrent=getattr(args, "concurrent", DEFAULT_CONCURRENT))
+    return arrange_mod.ArrangeConfig(
+        max_concurrent=getattr(args, "concurrent", DEFAULT_CONCURRENT),
+        voice_roles=not getattr(args, "no_voice_roles", False),
+        emphasize_melody=not getattr(args, "no_emphasis", False),
+    )
 
 
 #: 原音として扱う拡張子
@@ -234,6 +254,7 @@ def cmd_build(args: argparse.Namespace) -> int:
             arrange_config=_arrange_config(args),
             move=getattr(args, "move", "vehicle"),
             refresh=getattr(args, "refresh", False),
+            source=getattr(args, "source", "mix"),
         )
     except (ValueError, RuntimeError) as e:
         print(f"エラー: {e}", file=sys.stderr)
@@ -521,6 +542,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--concurrent", type=int, default=DEFAULT_CONCURRENT, metavar="N",
                    help=f"同時に鳴っている音を N 個までに抑える（既定 {DEFAULT_CONCURRENT} / 0 で無制限）")
     p.add_argument("--no-arrange", action="store_true", help="編曲を一切掛けない（採譜そのまま）")
+    p.add_argument("--no-voice-roles", action="store_true",
+                   help="主旋律・低音への楽器の割り当てをやめる")
+    p.add_argument("--no-emphasis", action="store_true",
+                   help="主旋律を前に出す（近くに置く）のをやめる")
+    p.add_argument("--source", choices=("mix", "instrumental"), default="mix",
+                   help="採譜に使う音。mix=原音のまま / instrumental=声を抜いた伴奏だけ")
     p.add_argument("--install", default=None, metavar="DIR",
                    help="書き出したあとこのディレクトリにコピー（<world>/datapacks）")
     p.add_argument("--world", default=None, metavar="NAME",
@@ -555,6 +582,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--concurrent", type=int, default=DEFAULT_CONCURRENT, metavar="N",
                    help=f"同時に鳴っている音を N 個までに抑える（既定 {DEFAULT_CONCURRENT} / 0 で無制限）")
     p.add_argument("--no-arrange", action="store_true", help="編曲を一切掛けない（採譜そのまま）")
+    p.add_argument("--no-voice-roles", action="store_true",
+                   help="主旋律・低音への楽器の割り当てをやめる")
+    p.add_argument("--no-emphasis", action="store_true",
+                   help="主旋律を前に出す（近くに置く）のをやめる")
+    p.add_argument("--source", choices=("mix", "instrumental"), default="mix",
+                   help="採譜に使う音。mix=原音のまま / instrumental=声を抜いた伴奏だけ")
     p.add_argument("--polyphony", type=int, default=247, help="再生時の上限（バニラ247 / RSLS4095）")
     p.add_argument("--measurements", default="out/measure/measurements.json",
                    help="実測から音響モデルを較正する")
@@ -598,6 +631,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--concurrent", type=int, default=DEFAULT_CONCURRENT, metavar="N",
                    help=f"同時に鳴っている音を N 個までに抑える（既定 {DEFAULT_CONCURRENT} / 0 で無制限）")
     p.add_argument("--no-arrange", action="store_true", help="編曲を一切掛けない（採譜そのまま）")
+    p.add_argument("--no-voice-roles", action="store_true",
+                   help="主旋律・低音への楽器の割り当てをやめる")
+    p.add_argument("--no-emphasis", action="store_true",
+                   help="主旋律を前に出す（近くに置く）のをやめる")
+    p.add_argument("--source", choices=("mix", "instrumental"), default="mix",
+                   help="採譜に使う音。mix=原音のまま / instrumental=声を抜いた伴奏だけ")
     p.add_argument("--refresh", action="store_true", help="採譜をやり直す")
     p.add_argument("--memory", default="2G")
     p.set_defaults(func=cmd_verify)

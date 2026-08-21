@@ -74,6 +74,15 @@ button.primary:hover:not(:disabled){opacity:.9;color:#fff}
 button.danger{background:var(--redstone-bg);border-color:var(--redstone);color:var(--redstone)}
 button.mini{width:auto;padding:5px 10px;font-size:11.5px;margin:0}
 .hint{font-size:11px;color:var(--text-3);line-height:1.6;margin:6px 0 0}
+.opts{display:flex;flex-direction:column;gap:5px;margin-top:2px}
+.chk{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--text-2);margin:0;cursor:pointer}
+.chk input{width:auto;margin:0}
+.chk input:disabled+*, .chk:has(input:disabled){opacity:.45;cursor:default}
+details.fixed{margin-top:14px;border:1px solid var(--line-soft);border-radius:5px;background:var(--surface-2)}
+details.fixed summary{padding:7px 10px;font-size:11.5px;color:var(--text-2);cursor:pointer;user-select:none}
+details.fixed ul{margin:0;padding:0 12px 10px 26px;font-size:11px;color:var(--text-3);line-height:1.7}
+details.fixed li{margin-bottom:5px}
+details.fixed b{color:var(--text-2);font-weight:600}
 
 /* ---- log ---- */
 .logbar{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line-soft);background:var(--surface-2)}
@@ -118,9 +127,45 @@ img.plot{width:100%;border:1px solid var(--line);border-radius:5px;margin-bottom
     <h3>設定</h3>
     <div class="row">
       <div><label for="world">ワールド名</label><input type="text" id="world" value="mcnb_song"></div>
-      <div><label for="poly">同時発音上限</label><input type="number" id="poly" value="200" min="1" max="4095"></div>
+      <div><label for="poly">1 tick の上限</label><input type="number" id="poly" value="200" min="1" max="4095"></div>
     </div>
     <p class="hint">バニラは 247 まで。Raise Sound Limit Simplified を入れてあるので 4095 まで上げられるが、上げるほど濁る。</p>
+
+    <label for="source">採譜に使う音</label>
+    <select id="source">
+      <option value="mix">原音のまま（ボーカル込み）</option>
+      <option value="instrumental">声を抜いた伴奏だけ</option>
+    </select>
+    <p class="hint">既定は原音のまま。分離はどちらでも走るが、それは主旋律の抽出とカラオケ書き出しに使うだけで、音符にはボーカルも入る。</p>
+
+    <label for="concurrent">同時に鳴っている音の上限</label>
+    <input type="number" id="concurrent" value="60" min="0" max="4095">
+    <p class="hint">音符ブロックの音は 0.5〜16 tick 残る。ここが「濁り」を決める。0 で無制限。</p>
+
+    <label>編曲</label>
+    <div class="opts">
+      <label class="chk"><input type="checkbox" id="arrange" checked> 編曲する（外すと採譜そのまま）</label>
+      <label class="chk"><input type="checkbox" id="voiceRoles" checked> 主旋律と低音に専用の楽器</label>
+      <label class="chk"><input type="checkbox" id="emphasis" checked> 主旋律を近くに置いて前に出す</label>
+    </div>
+
+    <label for="move">動き方</label>
+    <select id="move">
+      <option value="vehicle">見えない台に乗る（滑らか）</option>
+      <option value="teleport">直接テレポート（20fps でカクつく）</option>
+      <option value="run">自分の足で走る</option>
+    </select>
+
+    <details class="fixed">
+      <summary>変えられないもの（今の実装）</summary>
+      <ul>
+        <li><b>20Hz（1 tick 刻み）</b> — コマンドで鳴らすため。レッドストーン回路版は最小 2 tick なので未実装</li>
+        <li><b>拍・調・コード・主旋律の解析</b> — 音源入力なら必ず走る。結果は右の「解析」で聴ける</li>
+        <li><b>拍子</b> — 自動判定。窓ごとの一致率が 50% 未満なら「変拍子」とみなして小節を使わない</li>
+        <li><b>採譜と原音のずれ</b> — 曲ごとに測って自動補正（実測 -93ms 〜 +372ms）</li>
+        <li><b>採譜のやり方</b> — hyperchoron（CQT のピーク拾い、毎秒190音）。音符単位の採譜は検証中</li>
+      </ul>
+    </details>
 
     <h3>作る</h3>
     <button class="primary" data-act="build"><span>▶</span>音源から作ってワールドまで<span class="k">build --world</span></button>
@@ -184,12 +229,23 @@ function inputValue() {
          ($('#testsel').value ? `tests/inputs/${$('#testsel').value}.mid` : '');
 }
 
+function buildOpts() {
+  const a = ['--max-polyphony', $('#poly').value,
+             '--concurrent', $('#concurrent').value,
+             '--source', $('#source').value,
+             '--move', $('#move').value];
+  if (!$('#arrange').checked)     a.push('--no-arrange');
+  if (!$('#voiceRoles').checked)  a.push('--no-voice-roles');
+  if (!$('#emphasis').checked)    a.push('--no-emphasis');
+  return a;
+}
+
 const ACTIONS = {
-  build:      () => { const i = inputValue(); return i && {label:`作る: ${i}`, args:['build', i, '--world', $('#world').value.trim() || 'mcnb_song', '--max-polyphony', $('#poly').value]}; },
-  'build-only':() => { const i = inputValue(); return i && {label:`データパック: ${i}`, args:['build', i, '--max-polyphony', $('#poly').value]}; },
+  build:      () => { const i = inputValue(); return i && {label:`作る: ${i}`, args:['build', i, '--world', $('#world').value.trim() || 'mcnb_song', ...buildOpts()]}; },
+  'build-only':() => { const i = inputValue(); return i && {label:`データパック: ${i}`, args:['build', i, ...buildOpts()]}; },
   analyze:    () => { const i = inputValue(); return i && {label:`解析: ${i}`, args:['analyze', i]}; },
   analyze20:  () => { const i = inputValue(); return i && {label:`解析(20秒): ${i}`, args:['analyze', i, '--duration', '20']}; },
-  verify:     () => { const i = inputValue(); return i && {label:`検証: ${i}`, args:['verify', i]}; },
+  verify:     () => { const i = inputValue(); return i && {label:`検証: ${i}`, args:['verify', i, '--concurrent', $('#concurrent').value]}; },
   test:       () => ({label:'テスト曲 1-10', args:['test']}),
   selftest:   () => ({label:'録音経路の確認', args:['measure','--selftest']}),
   measure:    () => ({label:'実機測定', args:['measure']}),
@@ -209,6 +265,14 @@ $('#stop').addEventListener('click', async () => {
                             body: JSON.stringify({id: currentJob})});
 });
 $('#clear').addEventListener('click', () => { out.textContent = ''; });
+
+// 編曲そのものを切ったら、細かい切り替えは意味がないので触れなくする
+function syncArrange() {
+  const on = $('#arrange').checked;
+  for (const id of ['voiceRoles', 'emphasis', 'concurrent']) $('#' + id).disabled = !on;
+}
+$('#arrange').addEventListener('change', syncArrange);
+syncArrange();
 
 async function start(spec) {
   const res = await fetch('/api/run', {method:'POST', headers:{'Content-Type':'application/json'},
