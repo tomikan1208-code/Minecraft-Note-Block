@@ -59,6 +59,30 @@ BASE_MOVEMENT_SPEED = 0.1
 #: 属性で速度を上げるときの識別子
 SPEED_MODIFIER_ID = "mcnb:run"
 
+#: 乗り物に使うエンティティのタグ
+VEHICLE_TAG = "mcnb_vehicle"
+
+#: 単一エンティティしか受け付けないコマンドがある（/attribute /rotate /ride など）。
+#: 複数人が聴いている場合に備えて execute as で回す
+LISTENERS = "@a[tag=mcnb_listener]"
+
+
+def _for_each_listener(command: str) -> str:
+    """複数のプレイヤーに対して、単一対象のコマンドを回す。"""
+    return f"execute as {LISTENERS} run {command}"
+
+#: 移動のやり方
+#:
+#: ``vehicle``  見えない armor_stand に乗せて、その乗り物を動かす（既定）
+#: ``teleport`` プレイヤーを直接 /tp する
+#: ``run``      自分の足で走る（速度はアイテムの属性で上げる）
+#:
+#: 既定を ``vehicle`` にしている理由: プレイヤーを直接 /tp すると位置が
+#: 毎 tick スナップするので **20fps のカクつき**になる。エンティティの動きは
+#: クライアントが補間するため、乗り物ごと動かすと滑らかに見える。
+#: 向きは ``/rotate``（テレポートを伴わない）で固定する。
+MOVE_MODES = ("vehicle", "teleport", "run")
+
 
 def run_modifier_amount(blocks_per_second: float) -> float:
     """``add_multiplied_base`` に渡す倍率。
@@ -222,7 +246,7 @@ def emit(
     out_dir: Path,
     name: str | None = None,
     overwrite: bool = True,
-    run_mode: bool = False,
+    move: str = "vehicle",
 ) -> DatapackResult:
     """データパックを ``out_dir`` に書き出す。"""
     name = name or layout.song.name
@@ -316,6 +340,9 @@ def emit(
     )
 
     # --- 演奏 -------------------------------------------------------------- #
+    if move not in MOVE_MODES:
+        raise ValueError(f"未知の移動方法: {move}（{', '.join(MOVE_MODES)}）")
+
     bps = layout.speed * 20.0
     play_lines = [
         "tag @s add mcnb_listener",
@@ -325,7 +352,7 @@ def emit(
         _forceload_span(x0 - 2, bz1 - 1, x0 + PLAY_WINDOW, bz2 + 1),
         f"tp @s {x0} {y0} {z0} {YAW_EAST:g} 0",
     ]
-    if run_mode:
+    if move == "run":
         # 自分の足で走る。移動速度はアイテムの属性で上げる。
         # ただし**タイミングは datapack の /tp が握る**（毎 tick 位置を直すので、
         # 走るのが速すぎても遅すぎても曲はずれない）。
@@ -344,6 +371,19 @@ def emit(
             'slot:"feet",id:"mcnb:boots"}]]',
             f'tellraw @a {{"text":"[mcnb] 演奏開始 — 前を向いて走ってください（{bps:.1f} ブロック/秒）"}}',
         ]
+    elif move == "vehicle":
+        # 見えない台に乗せて、台ごと動かす。
+        # プレイヤーを直接 /tp すると 20fps でスナップするが、
+        # エンティティの動きはクライアントが補間するので滑らかに見える。
+        play_lines += [
+            "gamemode adventure @s",
+            f"kill @e[tag={VEHICLE_TAG}]",
+            f"summon minecraft:armor_stand {x0} {y0} {z0} "
+            "{Invisible:1b,NoGravity:1b,Marker:1b,Invulnerable:1b,Silent:1b,"
+            f'Tags:["{VEHICLE_TAG}"]}}',
+            f"ride @s mount @e[tag={VEHICLE_TAG},limit=1,sort=nearest]",
+            'tellraw @a {"text":"[mcnb] 演奏開始"}',
+        ]
     else:
         play_lines += [
             "gamemode spectator @s",
@@ -357,6 +397,9 @@ def emit(
             f"scoreboard players set #playing {NS} 0",
             # 曲が終わったら開始位置へ戻す。1206 ブロック先に置き去りにしない
             f"tp @a[tag=mcnb_listener] {x0} {y0} {z0} {YAW_EAST:g} 0",
+            # /attribute は単一エンティティしか受け付けないので execute as で回す
+            _for_each_listener("ride @s dismount"),
+            f"kill @e[tag={VEHICLE_TAG}]",
             # /attribute は単一エンティティしか受け付けないので execute as で回す
             "execute as @a[tag=mcnb_listener] run attribute @s "
             f"minecraft:movement_speed modifier remove {SPEED_MODIFIER_ID}",
@@ -394,9 +437,17 @@ def emit(
     by_tick = layout.placements_by_tick()
     for tick in range(total_ticks + 1):
         px, py, pz = layout.player_pos(tick)
-        # X は小数。1 tick に 0.365 ブロックずつ動かすと走っているように見える。
-        # 向きも毎 tick 指定するので、マウスを動かしても左右にずれない
-        lines = [f"tp @a[tag=mcnb_listener] {px:.3f} {py} {pz} {YAW_EAST:g} 0"]
+        if move == "vehicle":
+            # 乗り物を動かす。プレイヤーは乗っているので付いてくる。
+            # 向きは /rotate で固定する（テレポートを伴わないのでカクつかない）
+            lines = [
+                f"tp @e[tag={VEHICLE_TAG},limit=1] {px:.3f} {py} {pz} {YAW_EAST:g} 0",
+                _for_each_listener(f"rotate @s {YAW_EAST:g} 0"),
+            ]
+        else:
+            # X は小数。1 tick に 0.365 ブロックずつ動かすと走っているように見える。
+            # ただしプレイヤーを直接動かすので 20fps でスナップする
+            lines = [f"tp @a[tag=mcnb_listener] {px:.3f} {py} {pz} {YAW_EAST:g} 0"]
 
         # 前 tick の発火用レッドストーンを片付ける。実際に置いた範囲だけ fill する
         # 前 tick の発火用レッドストーンを片付ける。

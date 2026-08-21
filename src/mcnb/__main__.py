@@ -114,7 +114,7 @@ def build_one(
     max_polyphony: int = 200,
     verbose: bool = True,
     arrange_config=None,
-    run_mode: bool = False,
+    move: str = "vehicle",
 ) -> BuildResult:
     """1つの入力を最後まで通す。CLI からもテストランナーからも使う。"""
     name = name or src.stem
@@ -149,7 +149,7 @@ def build_one(
         print("\n■ Minecraft 空間に配置（直線コリドー）")
         print(layout.summarize(lay))
 
-    pack = datapack.emit(lay, out / f"{name}_datapack", name=name, run_mode=run_mode)
+    pack = datapack.emit(lay, out / f"{name}_datapack", name=name, move=move)
     if verbose:
         print("\n■ データパック")
         print(datapack.summarize(pack))
@@ -187,7 +187,7 @@ def cmd_build(args: argparse.Namespace) -> int:
             speed=args.speed,
             max_polyphony=args.max_polyphony,
             arrange_config=_arrange_config(args),
-            run_mode=getattr(args, "run", False),
+            move=getattr(args, "move", "vehicle"),
         )
     except (ValueError, RuntimeError) as e:
         print(f"エラー: {e}", file=sys.stderr)
@@ -421,9 +421,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", default=str(DEFAULT_OUT))
     p.add_argument("--origin", type=int, nargs=3, default=[0, layout.FLAT_SURFACE_Y, 0],
                    metavar=("X", "Y", "Z"), help="既定はフラット地形の地表 (0, -60, 0)")
-    p.add_argument("--run", action="store_true",
-                   help="自分の足で走る（アイテム属性で移動速度を上げる）。"
-                        "既定はスペクテイターで datapack が動かす")
+    p.add_argument("--move", choices=datapack.MOVE_MODES, default="vehicle",
+                   help="移動のやり方。vehicle=見えない台に乗って動く（既定・滑らか）/ "
+                        "teleport=プレイヤーを直接 tp（20fps でカクつく）/ "
+                        "run=自分の足で走る（アイテム属性で速度を上げる）")
     p.add_argument("--speed", type=float, default=None, metavar="B",
                    help="プレイヤーの移動速度（ブロック/tick）。"
                         "既定は曲の密度から自動。0.365 = スプリント+速度II")
