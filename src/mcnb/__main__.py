@@ -369,7 +369,7 @@ def cmd_world(args: argparse.Namespace) -> int:
 
     if r.created:
         print(f"■ ワールドを作成: {r.path}")
-        print("  チートON / クリエイティブ / ボイド地形")
+        print("  チートON / クリエイティブ / フラット地形 / 生成物なし / モブ湧きなし")
     else:
         print(f"■ 既にあります: {r.path}（--overwrite で作り直し）")
     if pack:

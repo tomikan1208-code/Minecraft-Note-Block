@@ -33,6 +33,36 @@ CLASSIC_FLAT = {
         {"block": "minecraft:grass_block", "height": 1},
     ],
     "biome": "minecraft:plains",
+    # 演奏の邪魔になるものを全部切る。
+    # 村や要塞が構造の中に生えてくると音符ブロックを壊すし、視界も邪魔になる
+    "structure_overrides": [],
+    "lakes": False,
+    "features": False,
+}
+
+#: ワールドに焼き込むゲームルール。26.x の名前（camelCase から変わっている）
+WORLD_GAMERULES = {
+    "spawn_mobs": "false",          # 旧 doMobSpawning
+    "spawn_monsters": "false",
+    "spawn_patrols": "false",
+    "spawn_phantoms": "false",
+    "spawn_wandering_traders": "false",
+    "spawn_wardens": "false",
+    "spawner_blocks_work": "false",
+    "mob_griefing": "false",
+    "advance_time": "false",        # 旧 doDaylightCycle
+    "advance_weather": "false",     # 旧 doWeatherCycle
+    "random_tick_speed": "0",
+    "fire_damage": "false",
+    "fall_damage": "false",
+    "drowning_damage": "false",
+    "freeze_damage": "false",
+    "immediate_respawn": "true",
+    "show_death_messages": "false",
+    "max_command_sequence_length": "2147483647",
+    "max_block_modifications": "2147483647",
+    "send_command_feedback": "false",
+    "command_block_output": "false",
 }
 #: 草ブロックの上、プレイヤーが立つ高さ。岩盤(-64)+土(-63,-62)+草(-61) なので -60
 FLAT_SURFACE_Y = -60
@@ -112,6 +142,9 @@ def create_world(
         },
     )
     srv.start()
+    # ゲームルールはサーバ上で設定してから止めると level.dat に焼き込まれる。
+    # あとから手で設定しなくても、開いた時点で静かなワールドになる
+    _apply_gamerules()
     # 起動直後だと spawn 周辺のチャンク書き出しが終わっていないことがある
     time.sleep(2.0)
     srv.stop()
@@ -130,6 +163,21 @@ def create_world(
         install_datapack(dest, datapack)
 
     return WorldResult(path=dest, name=name, created=True)
+
+
+def _apply_gamerules() -> None:
+    """RCON でゲームルールを設定する。止めるときに level.dat へ保存される。"""
+    from .server import Rcon
+
+    with Rcon() as rcon:
+        for rule, value in WORLD_GAMERULES.items():
+            response = rcon.command(f"gamerule {rule} {value}")
+            if "Incorrect argument" in response or "Unknown" in response:
+                print(f"  ! ゲームルール {rule} は 26.2 に無いようです")
+        # 既にいる分も消しておく
+        rcon.command("kill @e[type=!player]")
+        rcon.command("time set noon")
+        rcon.command("weather clear 1000000")
 
 
 def install_datapack(world: Path, pack: Path) -> Path:
