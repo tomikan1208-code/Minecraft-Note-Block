@@ -126,6 +126,13 @@ def cmd_build(args: argparse.Namespace) -> int:
         return 1
 
     pack_dir = result.pack.path
+
+    if args.world:
+        from . import world as world_mod
+        r = world_mod.create_world(args.world, datapack=pack_dir, overwrite=True)
+        print(f"\n■ 専用ワールド: {r.path}")
+        print(f"  ランチャーで「mcnb (音ブロック)」を起動 → ワールド「{r.name}」を開く")
+
     if args.install:
         target = Path(args.install)
         dest = target / pack_dir.name
@@ -223,6 +230,30 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
+def cmd_world(args: argparse.Namespace) -> int:
+    """演奏専用ワールドを新規生成する。"""
+    from . import world as world_mod
+
+    pack = Path(args.datapack) if args.datapack else None
+    try:
+        r = world_mod.create_world(
+            args.name, datapack=pack, overwrite=args.overwrite, memory=args.memory
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"エラー: {e}", file=sys.stderr)
+        return 1
+
+    if r.created:
+        print(f"■ ワールドを作成: {r.path}")
+        print("  チートON / クリエイティブ / ボイド地形")
+    else:
+        print(f"■ 既にあります: {r.path}（--overwrite で作り直し）")
+    if pack:
+        print(f"  データパック: {pack.name}")
+    print(f"\nMinecraft ランチャーで「mcnb (音ブロック)」を起動 → ワールド「{r.name}」を開く")
+    return 0
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     print("=== Minecraft 音源の抽出 ===")
     rc = mcassets.main(["--out", "assets/mc"] + (["--force"] if args.force else []))
@@ -250,6 +281,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="1 tick の最大同時発音（バニラ247 / RSLS導入なら4095まで）")
     p.add_argument("--install", default=None, metavar="DIR",
                    help="書き出したあとこのディレクトリにコピー（<world>/datapacks）")
+    p.add_argument("--world", default=None, metavar="NAME",
+                   help="演奏専用ワールドを作ってデータパックまで入れる")
     p.set_defaults(func=cmd_build)
 
     p = sub.add_parser("info", help="NBS の中身を表示")
@@ -263,6 +296,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--regen", action="store_true", help="テスト MIDI を作り直す")
     p.add_argument("--max-polyphony", type=int, default=200)
     p.set_defaults(func=cmd_test)
+
+    p = sub.add_parser("world", help="演奏専用ワールドを新規生成する（チートON/クリエイティブ/ボイド）")
+    p.add_argument("--name", default="mcnb")
+    p.add_argument("--datapack", default=None, help="同時に入れるデータパックのディレクトリ")
+    p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--memory", default="2G")
+    p.set_defaults(func=cmd_world)
 
     p = sub.add_parser("verify", help="headless サーバで実際に動かして検証する")
     p.add_argument("input")

@@ -19,22 +19,29 @@ Audio → 楽曲の理解 → Minecraft固有の再編曲 → Note Blocks
 
 ```bash
 uv sync
-uv run mcnb setup                      # 音源抽出 + Fabric + 軽量化Mod
-uv run mcnb test --regen               # テスト曲 1-10 を全部通す
-uv run mcnb build path/to/song.mp3     # 本番
+uv run mcnb setup                            # 音源抽出 + Fabric + 軽量化Mod
+uv run mcnb build song.mp3 --world mcnb_song # 音源 → データパック → 専用ワールド
 ```
 
-生成された `out/<name>/<name>_datapack` をワールドの `datapacks/` に入れて:
+ランチャーで「mcnb (音ブロック)」プロファイルを起動 → ワールド `mcnb_song` を開く →
 
 ```
-/reload
-/function mcnb:build        ← 音符ブロックを設置
-/function mcnb:play         ← 演奏開始
-/function mcnb:stop         ← 停止
-/function mcnb:goto_start   ← 開始位置へ
+/function mcnb:panel   ← 操作盤（コマンドブロック+ボタン）が建ってそこへ飛ぶ
 ```
 
-`--install <world>/datapacks` を付ければコピーまで自動でやる。
+あとは足元の色で押す: **黄緑=設置 / 水色=演奏 / 赤=停止 / 黄=開始位置へ**。
+コマンドでも同じ（`/function mcnb:build` `:play` `:stop` `:goto_start`）。
+
+| コマンド | 何をするか |
+|---|---|
+| `mcnb setup` | 音源抽出 + Fabric + 軽量化Mod |
+| `mcnb build <入力>` | 音源/MIDI/NBS → データパック。`--world NAME` で専用ワールドまで作る |
+| `mcnb world --name NAME` | 演奏専用ワールドを新規生成（チートON/クリエイティブ/ボイド） |
+| `mcnb test` | テスト曲 1-10 を全部パイプラインに通す |
+| **`mcnb verify <入力>`** | **headless サーバで実際に動かして検証する** |
+| `mcnb info <nbs>` | NBS の中身を表示 |
+
+既存のワールドは触らない。`mcnb world` が毎回まっさらな専用ワールドを作る。
 
 ---
 
@@ -69,19 +76,56 @@ X 軸を時間軸に取った**まっすぐな廊下**を作る。トロッコ�
 |---|---|---|
 | 0 | 既存技術の調査 | ✅ [docs/01_research.md](docs/01_research.md) |
 | 1 | 基盤・音源抽出・実測 | ✅ [docs/02_measurements.md](docs/02_measurements.md) |
-| **v0** | **音源 → データパック の貫通** | ✅ テスト1-10 が通る（**実機未検証**） |
+| **v0** | **音源 → データパック の貫通** | ✅ テスト1-10 が headless サーバで実機検証済み |
 | v1 | 実機測定リグ（RCON + 録音） | — |
 | v2 | レンダラ改造（距離減衰・同時発音制限） | — |
 | v3 | 目的関数 + テストランナー | — |
 | v4 | **編曲最適化器**（本体） | — |
 | v5 | 採譜補正 | — |
-| v6 | ワールド生成 | — |
+| v6 | ワールド生成 | ✅ `mcnb world`（チートON/クリエイティブ/ボイド） |
 
 計画の詳細は [docs/03_plan.md](docs/03_plan.md)。
 
+## 実機検証（`mcnb verify`）
+
+「理論上動く」で止めないための仕組み。Mojang 公式のサーバ jar（SHA1検証つき）を
+headless で起動し、RCON でデータパックを実際に動かして確かめる。
+
+1. データパックが読み込めるか
+2. `mcnb:build` が音符ブロックを本当に置けたか（ブロックステートまで一致するか）
+3. `/tick freeze` + `/tick step` で 1 tick ずつ進めて、
+   発火用レッドストーンが**正しい tick に正しい場所へ現れて消えるか**
+4. サーバログにエラーが出ていないか
+
+**これで実際に見つかったバグ（どれも無言で失敗していた）:**
+
+| 症状 | 原因 |
+|---|---|
+| データパックが読み込まれない | `pack.mcmeta` に `min_format` / `max_format` が必須（`pack_format` だけだと弾かれる） |
+| `setup` が丸ごと失敗 | **26.x でゲームルール名が全面的に変わっていた**（下表） |
+| 音符ブロックが1個も置かれない | `/forceload add` は**同じ tick ではチャンクを読み込まない**。直後の `setblock` が "That position is not loaded" で失敗 |
+| コマンドの応答がズレる | Minecraft の RCON は長い応答を 4096 バイトで分割する。1パケットしか読まないと次のコマンドが前の応答を受け取る |
+
+### 26.x で変わったゲームルール名
+
+| 旧 | 新 |
+|---|---|
+| `maxCommandChainLength` | `max_command_sequence_length` |
+| `doDaylightCycle` | `advance_time` |
+| `doWeatherCycle` | `advance_weather` |
+| `doMobSpawning` | `spawn_mobs` |
+| `commandModificationBlockLimit` | `max_block_modifications` |
+| `commandBlockOutput` | `command_block_output` |
+| `sendCommandFeedback` | `send_command_feedback` |
+
+camelCase → snake_case になっただけでなく一部は改名されている。旧名は
+「Incorrect argument」で**無言で失敗する**ので、実機で回すまで気づけなかった。
+
+---
+
 ### v0 でわかっている問題
 
-- **実機で動かしていない。** コマンド生成までしか確認していない
+- **音そのものは検証していない。** サーバは音を鳴らさないので、聴感の確認は v1 の測定リグ待ち
 - hyperchoron の既定は 40Hz なので `-r 20` を明示しないと**倍速になる**（対処済み）
 - hyperchoron の velocity 変換が対数寄りで、MIDI の 55 と 110（-6 dB）が NBS の 10 と 100（-20 dB）になる。**強弱が誇張される**
 - 長い音符が再発音されない（Test 7）。1発で減衰しきる

@@ -59,8 +59,8 @@ NOT_LOADED = "not loaded"
 LOAD_WAIT = 2.0
 #: 一度に forceload する X 幅（ブロック）。チャンク上限に当てないため
 FORCELOAD_WINDOW = 256
-#: /tick step は応答が返ってから実際に進むまで少し遅れる
-STEP_WAIT = 0.4
+#: /tick step の完了待ちのポーリング間隔（秒）
+STEP_POLL = 0.1
 
 
 class NotLoaded(RuntimeError):
@@ -79,6 +79,16 @@ def _score(rcon: Rcon, holder: str, objective: str = "mcnb") -> int | None:
     response = rcon.command(f"scoreboard players get {holder} {objective}")
     m = re.search(r"has (-?\d+)", response)
     return int(m.group(1)) if m else None
+
+
+def _wait_for_tick(rcon: Rcon, expected: int, steps: int) -> bool:
+    """``#t`` が ``expected`` に達するまで待つ。達しなければ False。"""
+    deadline = time.time() + steps / 20.0 + 5.0
+    while time.time() < deadline:
+        if (_score(rcon, "#t") or 0) >= expected:
+            return True
+        time.sleep(STEP_POLL)
+    return False
 
 
 def _forceload(rcon: Rcon, x1: int, z1: int, x2: int, z2: int) -> None:
@@ -199,12 +209,15 @@ def verify_layout(
 
             fired: list[str] = []
             leftover: list[str] = []
+            stalled: list[str] = []
             current = 0
             for target in check_ticks:
                 steps = target - current + 1
                 rcon.command(f"tick step {steps}")
-                # tick step は非同期。応答が返った時点ではまだ進んでいないので待つ
-                time.sleep(STEP_WAIT)
+                # /tick step は応答が返った時点ではまだ進んでいない。しかも N tick ぶんの
+                # 実時間がかかるので、固定待ちではなくカウンタが追いつくまで待つ
+                if not _wait_for_tick(rcon, target + 1, steps):
+                    stalled.append(f"tick {target} まで進まなかった")
                 current = target + 1
 
                 try:
@@ -232,6 +245,11 @@ def verify_layout(
                 "前 tick の発火用ブロックが消える",
                 not leftover,
                 "" if not leftover else f"残っている: {leftover[:3]}",
+            )
+            result.add(
+                "tick が想定どおり進む",
+                not stalled,
+                "" if not stalled else f"{stalled[:3]}",
             )
             result.add(
                 "確認したい範囲が読み込めた",
