@@ -17,11 +17,21 @@ Audio → 楽曲の理解 → Minecraft固有の再編曲 → Note Blocks
 
 ## クイックスタート
 
+**`GUI起動.bat` をダブルクリック** すればブラウザが開いて、そこから全部できる。
+コマンドで使うなら:
+
 ```bash
-uv sync
-uv run mcnb setup                            # 音源抽出 + Fabric + 軽量化Mod
-uv run mcnb build song.mp3 --world mcnb_song # 音源 → データパック → 専用ワールド
+uv sync --extra gui --extra audio --extra measure
+uv run mcnb gui                                    # GUI
+uv run mcnb setup                                  # 音源抽出 + Fabric + 軽量化Mod
+uv run mcnb build song.mp3 --world mcnb_song       # 音源 → データパック → 専用ワールド
+uv run mcnb build "https://youtu.be/..." --world x # URL からでも
 ```
+
+| .bat | 何をするか |
+|---|---|
+| `GUI起動.bat` | 依存を確認してブラウザで GUI を開く |
+| `実機測定.bat` | 測定リグを起動（Minecraft から `localhost:25566` に繋ぐ） |
 
 ランチャーで「mcnb (音ブロック)」プロファイルを起動 → ワールド `mcnb_song` を開く →
 
@@ -39,7 +49,11 @@ uv run mcnb build song.mp3 --world mcnb_song # 音源 → データパック →
 | `mcnb world --name NAME` | 演奏専用ワールドを新規生成（チートON/クリエイティブ/クラシックフラット） |
 | `mcnb test` | テスト曲 1-10 を全部パイプラインに通す |
 | **`mcnb verify <入力>`** | **headless サーバで実際に動かして検証する** |
+| `mcnb gui` | ブラウザで1画面から全部やる |
 | `mcnb info <nbs>` | NBS の中身を表示 |
+
+入力は **音源ファイル / MIDI / NBS / YouTube などの URL** のどれでもよい。
+URL は `yt-dlp` で取得して `cache/audio/` に置き、同じ URL は二度落とさない。
 
 既存のワールドは触らない。`mcnb world` が毎回まっさらな専用ワールドを作る。
 
