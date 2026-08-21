@@ -151,7 +151,10 @@ img.plot{width:100%;border:1px solid var(--line);border-radius:5px;margin-bottom
     </select>
     <p class="hint">「この枠には音符が1個」と決める。採譜は1つの音を半音上下に揺らしながら刻むことがあり、そのままだとピロピロ鳴る。16分で半音のぶつかりが 319→0 になった。</p>
 
-    <label class="chk" style="margin:12px 0 0"><input type="checkbox" id="reverb"> 残響をつける（遅らせて小さく鳴らし直す）</label>
+    <label class="chk" style="margin:12px 0 0"><input type="checkbox" id="underpin"> 低音を足す（1オクターブ下を bass で）</label>
+    <p class="hint">採譜の下限は MIDI 48（130Hz）で、50〜150Hz が人の作った音符ブロック演奏より <b>-20.5dB</b> 足りない。原曲にはある帯域なので、採譜で失っている。足すと -7.9dB まで縮まる。</p>
+
+    <label class="chk"><input type="checkbox" id="reverb"> 残響をつける（遅らせて小さく鳴らし直す）</label>
     <p class="hint">音符ブロックにエフェクトは無いので、余韻を出すには鳴らし直すしかない。3tick後に42%、7tick後に20%で重ねる。</p>
 
     <label for="sparkleVoices">明るさ（上に重ねる声部の数）</label>
@@ -256,6 +259,7 @@ function sparkleOpts() {
   const v = $('#sparkleVoices').value;
   const a = v === '0' ? [] : ['--sparkle', '--sparkle-voices', v];
   if ($('#reverb').checked) a.push('--reverb');
+  if ($('#underpin').checked) a.push('--underpin');
   return a;
 }
 

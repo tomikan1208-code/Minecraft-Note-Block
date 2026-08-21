@@ -231,13 +231,16 @@ def _arrange_config(args: argparse.Namespace):
     from . import arrange as arrange_mod
 
     sparkle = getattr(args, "sparkle", False)
+    extras = sparkle or getattr(args, "reverb", False) or getattr(args, "underpin", False)
     if getattr(args, "no_arrange", False):
-        if not sparkle and not getattr(args, "reverb", False):
+        if not extras:
             return None
         # 「編曲なし」でも重ねだけは掛けたい。音を消さないので、
         # 間引きの良し悪しとは独立に効く
         return arrange_mod.ArrangeConfig(
-            sparkle=sparkle, reverb=getattr(args, "reverb", False),
+            sparkle=sparkle, underpin=getattr(args, "underpin", False),
+            underpin_gain=getattr(args, "underpin_gain", arrange_mod.UNDERPIN_GAIN),
+            reverb=getattr(args, "reverb", False),
             reverb_gain=getattr(args, "reverb_gain", 1.0), quantize=False, voice_roles=False, emphasize_melody=False,
             fold_harmonics=False, dedupe=False, thin_sustains=False, max_concurrent=0,
             sparkle_voices=getattr(args, "sparkle_voices", 1),
@@ -245,6 +248,8 @@ def _arrange_config(args: argparse.Namespace):
         )
     return arrange_mod.ArrangeConfig(
         sparkle=sparkle,
+        underpin=getattr(args, "underpin", False),
+        underpin_gain=getattr(args, "underpin_gain", arrange_mod.UNDERPIN_GAIN),
         reverb=getattr(args, "reverb", False),
         reverb_gain=getattr(args, "reverb_gain", 1.0),
         sparkle_voices=getattr(args, "sparkle_voices", 1),
@@ -576,6 +581,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-arrange", action="store_true", help="編曲を一切掛けない（採譜そのまま）")
     p.add_argument("--sparkle", action="store_true",
                    help="最上声部の1オクターブ上を明るい楽器(chime/bell)で重ねる。音は消さない")
+    p.add_argument("--underpin", action="store_true",
+                   help="いちばん低い音の1オクターブ下を bass で足す。50〜150Hz が -20dB 足りない")
+    p.add_argument("--underpin-gain", type=float, default=0.85, metavar="G",
+                   help="足す低音の音量（既定 0.85）")
     p.add_argument("--reverb", action="store_true",
                    help="遅らせて小さく鳴らし直し、余韻を作る（音符ブロックにエフェクトは無い）")
     p.add_argument("--reverb-gain", type=float, default=1.0, metavar="G",
@@ -630,6 +639,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-arrange", action="store_true", help="編曲を一切掛けない（採譜そのまま）")
     p.add_argument("--sparkle", action="store_true",
                    help="最上声部の1オクターブ上を明るい楽器(chime/bell)で重ねる。音は消さない")
+    p.add_argument("--underpin", action="store_true",
+                   help="いちばん低い音の1オクターブ下を bass で足す。50〜150Hz が -20dB 足りない")
+    p.add_argument("--underpin-gain", type=float, default=0.85, metavar="G",
+                   help="足す低音の音量（既定 0.85）")
     p.add_argument("--reverb", action="store_true",
                    help="遅らせて小さく鳴らし直し、余韻を作る（音符ブロックにエフェクトは無い）")
     p.add_argument("--reverb-gain", type=float, default=1.0, metavar="G",
@@ -693,6 +706,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-arrange", action="store_true", help="編曲を一切掛けない（採譜そのまま）")
     p.add_argument("--sparkle", action="store_true",
                    help="最上声部の1オクターブ上を明るい楽器(chime/bell)で重ねる。音は消さない")
+    p.add_argument("--underpin", action="store_true",
+                   help="いちばん低い音の1オクターブ下を bass で足す。50〜150Hz が -20dB 足りない")
+    p.add_argument("--underpin-gain", type=float, default=0.85, metavar="G",
+                   help="足す低音の音量（既定 0.85）")
     p.add_argument("--reverb", action="store_true",
                    help="遅らせて小さく鳴らし直し、余韻を作る（音符ブロックにエフェクトは無い）")
     p.add_argument("--reverb-gain", type=float, default=1.0, metavar="G",

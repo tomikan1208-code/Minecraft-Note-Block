@@ -95,6 +95,60 @@ def musical_weight(event: NoteEvent, context: MusicalContext, offset: float = 0.
 
 
 # --------------------------------------------------------------------------- #
+# 低音を足す
+# --------------------------------------------------------------------------- #
+
+#: 低音に使う楽器。bass は MIDI 30〜54（46〜185Hz）を出せる唯一の系統
+UNDERPIN_VOICES = ("bass", "didgeridoo")
+#: 足す低音の音量。曲の土台なので控えめにしない
+UNDERPIN_GAIN = 0.85
+#: これより高い音には足さない。中音域に低音を重ねても濁るだけ
+UNDERPIN_MAX_MIDI = 64
+
+
+def underpin(song: Song, config: ArrangeConfig) -> Song:
+    """各 tick のいちばん低い音の 1 オクターブ下を、bass で足す。
+
+    採譜が出す音は MIDI 48 が下限（130Hz）で、**50〜150Hz にほとんど何もない**。
+    お手本（人が作った音符ブロック演奏）と比べた実測で、この帯域だけ
+    **-20.5 dB** も足りなかった。他の帯域の差が -7〜-10 dB なので、
+    ここが群を抜いて大きい。
+
+    原曲にはこの帯域が 20.6 dB あるので、**採譜で失っている**。
+    音符ブロックで 50〜150Hz を出せるのは bass（MIDI 30〜54）だけ。
+
+    ``sparkle`` の逆。音は消さずに足すだけ。
+    """
+    if not config.underpin:
+        return song
+
+    by_tick: dict[int, list[NoteEvent]] = defaultdict(list)
+    for e in song.events:
+        if e.instrument not in PERCUSSION:
+            by_tick[e.tick].append(e)
+
+    added: list[NoteEvent] = []
+    for events in by_tick.values():
+        low = min(events, key=lambda e: e.midi)
+        if low.midi > UNDERPIN_MAX_MIDI:
+            continue
+        target = low.midi - 12
+        for name in UNDERPIN_VOICES:
+            inst = INSTRUMENTS.get(name)
+            if inst and inst.base_midi <= target <= inst.base_midi + 24:
+                added.append(replace(
+                    low, instrument=name, midi=target,
+                    velocity=max(0.02, min(1.0, low.velocity * config.underpin_gain)),
+                    panning=0.0,          # 低音は中央に置く。定位が付くと不自然
+                ))
+                break
+
+    config.stats["underpin"] = len(added)
+    events = sorted(song.events + added, key=lambda e: (e.tick, -e.velocity))
+    return Song(name=song.name, events=events, source=song.source)
+
+
+# --------------------------------------------------------------------------- #
 # 疑似残響
 # --------------------------------------------------------------------------- #
 
@@ -487,6 +541,11 @@ class ArrangeConfig:
     #: 音数ではなく**重なりの数**で決まることが実測で分かったので、こちらを制御する。
     max_concurrent: int = 0
 
+    #: いちばん低い音の 1 オクターブ下を bass で足す
+    underpin: bool = False
+    #: 足す低音の音量（元に対する倍率）
+    underpin_gain: float = UNDERPIN_GAIN
+
     #: 遅らせて小さく鳴らし直し、余韻を作る
     reverb: bool = False
     #: 残響の強さ（倍率）
@@ -764,6 +823,7 @@ PIPELINE = [
     # 残響は最後に足したいが、上限の計算に入れたいので前に置く。
     # ただし重ねより後（重ねた音にも残響を付ける）
     # 重ねるのは最初。あとの間引きや上限は、重ねたぶんも含めて数えてほしい
+    ("underpin", underpin, "underpin"),
     ("sparkle", sparkle, "sparkle"),
     ("reverb", reverb, "reverb"),
     # 格子への割り付けが最初。ここで tick が動くので、あとの処理は
