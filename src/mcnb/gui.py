@@ -148,12 +148,45 @@ def collect_state() -> dict:
     measures = sorted(str(p.relative_to(root)) for p in (root / "out" / "measure").glob("*.png"))
     return {
         "tests": tests,
+        "analyses": collect_analyses(root),
         "outputs": outputs[-24:],
         "worlds": worlds,
         "cached": cached[-12:],
         "measure_images": measures,
         "assets_ready": (root / "assets" / "mc" / "manifest.json").is_file(),
     }
+
+
+#: 確認用 wav の並び順。聴く順番でもある（拍が合っていなければ他は見るまでもない）
+ANALYSIS_TRACKS = ("beats", "chords", "melody", "melody_solo")
+
+
+def collect_analyses(root: Path) -> list[dict]:
+    """`mcnb analyze` の結果を拾う。ブラウザでそのまま聴けるようにするため。"""
+    found = []
+    for folder in sorted((root / "out" / "analysis").glob("*")):
+        tracks = [
+            {"kind": kind, "path": str((folder / f"{kind}.wav").relative_to(root))}
+            for kind in ANALYSIS_TRACKS
+            if (folder / f"{kind}.wav").is_file()
+        ]
+        if not tracks:
+            continue
+        found.append({"name": folder.name, "summary": _analysis_summary(folder), "tracks": tracks})
+    return found[-8:]
+
+
+def _analysis_summary(folder: Path) -> str:
+    """解析 JSON から一行の要約を作る。"""
+    try:
+        data = json.loads((folder / "analysis.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, KeyError):
+        return ""
+    key = (data.get("key") or {}).get("name") or "調不明"
+    names = [c["name"] for c in data.get("chords", [])]
+    uniq = [n for i, n in enumerate(names) if i == 0 or n != names[i - 1]]
+    head = " → ".join(uniq[:8]) + (" …" if len(uniq) > 8 else "")
+    return f"{data.get('tempo', 0):.0f} BPM / {key} / {head}"
 
 
 # --------------------------------------------------------------------------- #

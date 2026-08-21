@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -338,6 +339,49 @@ def cmd_render(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_analyze(args: argparse.Namespace) -> int:
+    """原音から拍・調・コード進行・主旋律を取り出し、聴いて確かめられる形で出す。"""
+    from . import musical, sonify
+
+    try:
+        src, _ = resolve_input(args.input)
+    except (ValueError, RuntimeError) as e:
+        print(f"エラー: {e}", file=sys.stderr)
+        return 1
+
+    if src.suffix.lower() not in {".wav", ".mp3", ".flac", ".m4a", ".ogg", ".opus"}:
+        print(f"エラー: 音源を渡してください（{src.suffix} は解析できません）", file=sys.stderr)
+        return 1
+
+    out = Path(args.out) / (args.name or src.stem)
+    print(f"■ 解析: {src.name}")
+    context = musical.analyze(src, duration=args.duration, melody=not args.no_melody, verbose=True)
+    print()
+    print(context.summary())
+
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "analysis.json").write_text(
+        json.dumps(context.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    if args.no_sonify:
+        print(f"\n  {out / 'analysis.json'}")
+        return 0
+
+    print("\n■ 音にしています…")
+    written = sonify.write_all(src, out, context=context, duration=args.duration)
+    labels = {
+        "beats": "拍とテンポ（クリックが曲に乗っているか）",
+        "chords": "コード（パッドが原曲とぶつからないか）",
+        "melody": "主旋律（原曲の旋律をなぞっているか）",
+        "melody_solo": "主旋律だけ",
+    }
+    print("\n聴いて確かめてください:")
+    for name, path in written.items():
+        print(f"  {path}  … {labels[name]}")
+    return 0
+
+
 def cmd_gui(args: argparse.Namespace) -> int:
     """1画面から全部やる GUI を立てる。"""
     from . import gui
@@ -470,6 +514,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--plot", action="store_true", help="スペクトログラムを並べた図も出す")
     p.add_argument("--compare", action="store_true", help="原曲との距離を数値で出す（入力が音源のとき）")
     p.set_defaults(func=cmd_render)
+
+    p = sub.add_parser("analyze", help="原音から拍・調・コード進行・主旋律を取り出す")
+    p.add_argument("input", help="音源ファイル / YouTube URL")
+    p.add_argument("--name", default=None)
+    p.add_argument("--out", default="out/analysis")
+    p.add_argument("--duration", type=float, default=None, help="先頭の秒数だけ解析する")
+    p.add_argument("--no-melody", action="store_true", help="主旋律の抽出を省く（速い）")
+    p.add_argument("--no-sonify", action="store_true", help="確認用 wav を書き出さない")
+    p.set_defaults(func=cmd_analyze)
 
     p = sub.add_parser("gui", help="1画面から全部やる GUI（ブラウザ）")
     p.add_argument("--host", default="127.0.0.1")

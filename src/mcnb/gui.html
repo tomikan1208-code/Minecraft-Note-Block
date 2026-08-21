@@ -126,6 +126,11 @@ img.plot{width:100%;border:1px solid var(--line);border-radius:5px;margin-bottom
     <button class="primary" data-act="build"><span>▶</span>音源から作ってワールドまで<span class="k">build --world</span></button>
     <button data-act="build-only"><span>◆</span>データパックだけ作る<span class="k">build</span></button>
 
+    <h3>読み解く</h3>
+    <button data-act="analyze"><span>♬</span>拍・調・コード・主旋律を取り出す<span class="k">analyze</span></button>
+    <button data-act="analyze20"><span>♪</span>先頭20秒だけ解析<span class="k">analyze --duration 20</span></button>
+    <p class="hint">結果は右の「解析」で聴けます。原曲を小さく混ぜてあるので、ずれていればすぐ分かります。</p>
+
     <h3>確かめる</h3>
     <button data-act="verify"><span>✓</span>サーバで実機検証<span class="k">verify</span></button>
     <button data-act="test"><span>≡</span>テスト曲 1-10 を通す<span class="k">test</span></button>
@@ -155,6 +160,9 @@ img.plot{width:100%;border:1px solid var(--line);border-radius:5px;margin-bottom
     <h2>試聴</h2>
     <div id="audioList"><p class="hint">URL から取り込むと、ここで原曲が聴けます。</p></div>
 
+    <h2 style="margin-top:22px">解析</h2>
+    <div id="analyses"><p class="hint">まだ解析していません。</p></div>
+
     <h2 style="margin-top:22px">出力</h2>
     <div id="outputs"><p class="hint">まだありません。</p></div>
 
@@ -179,6 +187,8 @@ function inputValue() {
 const ACTIONS = {
   build:      () => { const i = inputValue(); return i && {label:`作る: ${i}`, args:['build', i, '--world', $('#world').value.trim() || 'mcnb_song', '--max-polyphony', $('#poly').value]}; },
   'build-only':() => { const i = inputValue(); return i && {label:`データパック: ${i}`, args:['build', i, '--max-polyphony', $('#poly').value]}; },
+  analyze:    () => { const i = inputValue(); return i && {label:`解析: ${i}`, args:['analyze', i]}; },
+  analyze20:  () => { const i = inputValue(); return i && {label:`解析(20秒): ${i}`, args:['analyze', i, '--duration', '20']}; },
   verify:     () => { const i = inputValue(); return i && {label:`検証: ${i}`, args:['verify', i]}; },
   test:       () => ({label:'テスト曲 1-10', args:['test']}),
   selftest:   () => ({label:'録音経路の確認', args:['measure','--selftest']}),
@@ -263,6 +273,18 @@ async function refresh() {
       <div class="m">${esc(c.uploader || '')} ${c.duration ? fmt(c.duration) : ''}</div>
       <audio controls preload="none" src="/api/file?path=${encodeURIComponent('cache/audio/' + c.id + '.wav')}"></audio>
     </div>`).join('') : '<p class="hint">URL から取り込むと、ここで原曲が聴けます。</p>';
+
+  const TRACKS = {
+    beats: '拍とテンポ', chords: 'コード', melody: '主旋律', melody_solo: '主旋律だけ',
+  };
+  $('#analyses').innerHTML = s.analyses.length ? s.analyses.slice().reverse().map(a => `
+    <div class="card">
+      <div class="t">${esc(a.name)}</div>
+      <div class="m">${esc(a.summary || '')}</div>
+      ${a.tracks.map(t => `
+        <div class="m" style="margin-top:8px">${esc(TRACKS[t.kind] || t.kind)}</div>
+        <audio controls preload="none" src="/api/file?path=${encodeURIComponent(t.path)}"></audio>`).join('')}
+    </div>`).join('') : '<p class="hint">まだ解析していません。</p>';
 
   $('#outputs').innerHTML = s.outputs.length ? s.outputs.slice().reverse().map(o => `
     <div class="card">
