@@ -24,16 +24,41 @@ from pathlib import Path
 from .instruments import INSTRUMENTS, block_state
 from .layout import Layout, Placement
 
-#: Minecraft 26.2 の data pack format
-PACK_FORMAT = 107
+#: Minecraft 26.2 の data pack format。26.x は major.minor 制で、
+#: 82 以降を宣言するパックは min_format / max_format が必須（pack_format だけだと弾かれる）
+PACK_FORMAT_MAJOR = 107
+PACK_FORMAT_MINOR = 1
+
+#: 26.x でゲームルールの名前が全面的に変わった（camelCase → snake_case、一部は改名）。
+#: 実機のコマンドツリーから確認した対応:
+#:   maxCommandChainLength -> max_command_sequence_length
+#:   doDaylightCycle       -> advance_time
+#:   doWeatherCycle        -> advance_weather
+#:   doMobSpawning         -> spawn_mobs
+#:   commandModificationBlockLimit -> max_block_modifications
+SETUP_COMMANDS = [
+    "# 大量の setblock / fill を通すための設定",
+    "gamerule max_command_sequence_length 2147483647",
+    "gamerule max_block_modifications 2147483647",
+    "gamerule command_block_output false",
+    "gamerule send_command_feedback false",
+    "gamerule advance_time false",
+    "gamerule advance_weather false",
+    "gamerule spawn_mobs false",
+    "gamerule random_tick_speed 0",
+    "time set noon",
+    "weather clear",
+]
 
 #: +X（東）を向く yaw
 YAW_EAST = -90.0
 
 #: 1回の build 関数に詰めるコマンド数の上限
-BUILD_BATCH_COMMANDS = 1500
+BUILD_BATCH_COMMANDS = 6000
 #: 1回の build 関数がカバーする X 幅（ブロック）。forceload のチャンク数を抑えるため
-BUILD_BATCH_SPAN = 128
+BUILD_BATCH_SPAN = 256
+#: forceload してから setblock までに待つ tick 数。チャンク読み込みは非同期
+CHUNK_LOAD_DELAY = 10
 #: 再生中に forceload する窓の幅（ブロック）と、張り替える間隔（tick）
 PLAY_WINDOW = 192
 PLAY_WINDOW_TICKS = 48
@@ -179,7 +204,8 @@ def emit(layout: Layout, out_dir: Path, name: str | None = None, overwrite: bool
             {
                 "pack": {
                     "description": f"mcnb — {name}（音符ブロック自動編曲）",
-                    "pack_format": PACK_FORMAT,
+                    "min_format": [PACK_FORMAT_MAJOR, PACK_FORMAT_MINOR],
+                    "max_format": PACK_FORMAT_MAJOR,
                 }
             },
             indent=2,
@@ -206,53 +232,54 @@ def emit(layout: Layout, out_dir: Path, name: str | None = None, overwrite: bool
             f"scoreboard objectives add {NS} dummy",
             f"scoreboard players set #playing {NS} 0",
             f"scoreboard players set #t {NS} 0",
+            f"scoreboard players set #built {NS} 0",
             f"scoreboard players set #length {NS} {total_ticks + 1}",
             f'tellraw @a {{"text":"[mcnb] {name} 読み込み完了。/function {NS}:panel で操作盤を出す"}}',
         ],
     )
 
-    w.write(
-        "setup.mcfunction",
-        [
-            "# 大量の setblock を通すための設定",
-            "gamerule maxCommandChainLength 2147483647",
-            "gamerule commandBlockOutput false",
-            "gamerule sendCommandFeedback false",
-            "gamerule doDaylightCycle false",
-            "gamerule doWeatherCycle false",
-            "gamerule doMobSpawning false",
-            "gamerule randomTickSpeed 0",
-            "time set noon",
-            "weather clear",
-        ],
-    )
+    w.write("setup.mcfunction", SETUP_COMMANDS)
 
     # --- 操作盤（コマンドブロック + ボタン）--------------------------------- #
     w.write("panel.mcfunction", _panel_commands(x0, y0, z0))
 
     # --- build ------------------------------------------------------------- #
+    #
+    # /forceload add は**同じ tick ではチャンクを読み込まない**。読み込みは非同期で、
+    # 直後に setblock を打っても "That position is not loaded" で黙って失敗する。
+    # そのため 1区画ごとに「forceload する関数」と「設置する関数」を分け、
+    # schedule で数 tick 待ってから設置する。
+    #
     batches = _split_builds(layout)
     for i, batch in enumerate(batches):
         xs = [p.x for p in batch]
-        lines = [
-            f"# build {i + 1}/{len(batches)}",
-            "forceload remove all",
-            _forceload_span(min(xs) - 2, bz1 - 1, max(xs) + 1, bz2 + 1),
-        ]
+        w.write(
+            f"build/{i}_load.mcfunction",
+            [
+                f"# 区画 {i + 1}/{len(batches)} のチャンクを読み込む",
+                "forceload remove all",
+                _forceload_span(min(xs) - 2, bz1 - 1, max(xs) + 1, bz2 + 1),
+                f"schedule function {NS}:build/{i} {CHUNK_LOAD_DELAY}t replace",
+            ],
+        )
+
+        lines = [f"# 区画 {i + 1}/{len(batches)} を設置"]
         lines.extend(_build_commands(batch))
         if i + 1 < len(batches):
-            lines.append(f"schedule function {NS}:build/{i + 1} 1t replace")
+            lines.append(f"schedule function {NS}:build/{i + 1}_load 1t replace")
         else:
             lines.append("forceload remove all")
-            lines.append(f'tellraw @a {{"text":"[mcnb] 設置完了。/function {NS}:play で演奏"}}')
+            lines.append(f"scoreboard players set #built {NS} 1")
+            lines.append('tellraw @a {"text":"[mcnb] 設置完了。水色のボタンで演奏"}')
         w.write(f"build/{i}.mcfunction", lines)
 
     w.write(
         "build.mcfunction",
         [
             f"function {NS}:setup",
+            f"scoreboard players set #built {NS} 0",
             f'tellraw @a {{"text":"[mcnb] 設置開始… {len(batches)} 区画 / {layout.block_count} ブロック"}}',
-            f"function {NS}:build/0",
+            f"function {NS}:build/0_load",
         ],
     )
 

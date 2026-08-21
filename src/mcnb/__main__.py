@@ -197,6 +197,32 @@ def cmd_test(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
+def cmd_verify(args: argparse.Namespace) -> int:
+    """headless サーバで実際に動かして検証する。"""
+    from . import verify
+
+    src = Path(args.input)
+    if not src.is_file():
+        print(f"エラー: {src} がありません", file=sys.stderr)
+        return 1
+
+    print(f"■ ビルド: {src}")
+    r = build_one(src, Path(args.out), name=args.name, max_polyphony=args.max_polyphony, verbose=False)
+    print(f"  {len(r.layout.placements)} 音 / {r.pack.build_parts} 区画 / {r.pack.commands} コマンド")
+
+    print("\n■ サーバで検証")
+    try:
+        result = verify.verify_layout(
+            r.layout, r.pack.path, sample=args.sample, memory=args.memory
+        )
+    except verify.ServerError as e:
+        print(f"エラー: {e}", file=sys.stderr)
+        return 1
+
+    print(verify.format_result(result))
+    return 0 if result.ok else 1
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     print("=== Minecraft 音源の抽出 ===")
     rc = mcassets.main(["--out", "assets/mc"] + (["--force"] if args.force else []))
@@ -237,6 +263,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--regen", action="store_true", help="テスト MIDI を作り直す")
     p.add_argument("--max-polyphony", type=int, default=200)
     p.set_defaults(func=cmd_test)
+
+    p = sub.add_parser("verify", help="headless サーバで実際に動かして検証する")
+    p.add_argument("input")
+    p.add_argument("--name", default=None)
+    p.add_argument("--out", default="out/verify")
+    p.add_argument("--sample", type=int, default=24, help="ブロックを確認する箇所の数")
+    p.add_argument("--max-polyphony", type=int, default=200)
+    p.add_argument("--memory", default="2G")
+    p.set_defaults(func=cmd_verify)
 
     p = sub.add_parser("setup", help="音源抽出 + Fabric + 軽量化 Mod")
     p.add_argument("--force", action="store_true")
