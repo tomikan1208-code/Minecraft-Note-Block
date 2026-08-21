@@ -1083,6 +1083,62 @@ def analyze(
     )
 
 
+#: 採譜と原音のずれを探す範囲（秒）
+MAX_ALIGN_SHIFT = 1.0
+
+
+def estimate_offset(
+    note_times: list[tuple[float, int, float]], audio: Path | str, duration: float | None = None
+) -> tuple[float, float]:
+    """採譜と原音の時間のずれを秒で返す。``(ずれ, 一致度)``。
+
+    **採譜の時間軸は原音の時間軸と一致しない。** 実測で、ナイト・オブ・ナイツは
+    -93ms、Crazy ∞ nighT は +372ms ずれていた。曲ごとに違うので決め打ちできない。
+
+    ずれたまま「この音は主旋律か」「コードの構成音か」を判定すると、
+    **別の時刻の音に当てて**関係ない音を大きくしてしまう。実際それをやって、
+    編曲しないほうがマシという結果になった。
+
+    合わせ方は、採譜の音高の分布（クロマ）と原音のクロマの相互相関。
+    オンセットどうしだと、密な採譜では山が立たない（実測で相関 0.11 しか出なかった）。
+
+    ``note_times`` は ``(秒, MIDI, 音量)`` の並び。
+    """
+    import librosa
+
+    y, sr = librosa.load(str(audio), sr=ANALYSIS_RATE, mono=True, duration=duration)
+    reference = librosa.feature.chroma_cqt(y=separate_harmonic(y), sr=sr, hop_length=HOP)
+    n = reference.shape[1]
+    if n < 8 or not note_times:
+        return 0.0, 0.0
+
+    transcribed = np.zeros((12, n), dtype=np.float32)
+    for seconds, midi, velocity in note_times:
+        frame = int(round(seconds * sr / HOP))
+        if 0 <= frame < n:
+            transcribed[midi % 12, frame] += velocity
+    # 音は少し伸びるので、ならしてから比べる
+    kernel = np.ones(4, dtype=np.float32) / 4
+    transcribed = np.stack([np.convolve(row, kernel, mode="same") for row in transcribed])
+
+    def unit(m: np.ndarray) -> np.ndarray:
+        m = m - m.mean(axis=0, keepdims=True)
+        return m / np.maximum(np.linalg.norm(m, axis=0, keepdims=True), 1e-9)
+
+    a, t = unit(reference), unit(transcribed)
+    span = int(MAX_ALIGN_SHIFT * sr / HOP)
+    best = (0, -2.0)
+    for lag in range(-span, span + 1):
+        left = a[:, max(0, lag) : n + min(0, lag)]
+        right = t[:, max(0, -lag) : n + min(0, -lag)]
+        if left.shape[1] < 8:
+            continue
+        score = float(np.mean(np.sum(left * right, axis=0)))
+        if score > best[1]:
+            best = (lag, score)
+    return best[0] * HOP / sr, best[1]
+
+
 #: 解析結果の置き場。曲ごとに数分かかるので使い回す
 ANALYSIS_CACHE = Path("cache/analysis")
 

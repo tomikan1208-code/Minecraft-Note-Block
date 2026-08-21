@@ -161,6 +161,15 @@ def build_one(
             if verbose:
                 print(arrange_config.context.summary())
 
+            # 採譜の時間軸は原音とずれる。ずれたまま突き合わせると、別の時刻の音を
+            # 主旋律とみなして大きくしてしまう（実測で -93ms 〜 +372ms）
+            offset, score = musical_mod.estimate_offset(
+                [(e.tick / 20.0, e.midi, e.velocity) for e in tune.events], src
+            )
+            arrange_config.time_offset = offset
+            if verbose:
+                print(f"  採譜と原音のずれ: {offset * 1000:+.0f} ms （一致度 {score:.2f}）")
+
         tune, arrange_config = arrange_mod.arrange(tune, arrange_config)
         if verbose:
             print("\n■ 編曲")

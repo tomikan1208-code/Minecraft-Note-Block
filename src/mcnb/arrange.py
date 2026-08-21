@@ -50,7 +50,7 @@ BASS_MIDI = 52
 MELODY_TOLERANCE = 0.7
 
 
-def musical_weight(event: NoteEvent, context: MusicalContext) -> float:
+def musical_weight(event: NoteEvent, context: MusicalContext, offset: float = 0.0) -> float:
     """その音がどれだけ「曲の骨格」かを返す。
 
     これまでは音量だけで取捨を決めていた。大きい音ほど骨格だという当て推量で、
@@ -59,7 +59,7 @@ def musical_weight(event: NoteEvent, context: MusicalContext) -> float:
 
     返すのは音量に足す下駄。負にもなる。
     """
-    seconds = event.tick / TICKS_PER_SECOND
+    seconds = at_seconds(event, offset)
     weight = 0.0
 
     on_melody = False
@@ -158,7 +158,7 @@ def voice_by_role(song: Song, config: ArrangeConfig) -> Song:
             events.append(e)
             continue
         want: str | None = None
-        if is_melody(e, config.context):
+        if is_melody(e, config.context, config.time_offset):
             want = melody_voice(e.midi)
         elif e.midi <= BASS_MIDI:
             want = BASS_VOICE
@@ -190,7 +190,7 @@ def emphasize_melody(song: Song, config: ArrangeConfig) -> Song:
         if e.instrument in PERCUSSION:
             events.append(e)
             continue
-        if is_melody(e, config.context):
+        if is_melody(e, config.context, config.time_offset):
             lo, hi = MELODY_BAND
             lifted += 1
         else:
@@ -202,19 +202,24 @@ def emphasize_melody(song: Song, config: ArrangeConfig) -> Song:
     return Song(name=song.name, events=events, source=song.source)
 
 
-def is_melody(event: NoteEvent, context: MusicalContext | None) -> bool:
+def at_seconds(event: NoteEvent, offset: float = 0.0) -> float:
+    """その音符が原音のどの時刻にあたるか。"""
+    return event.tick / TICKS_PER_SECOND + offset
+
+
+def is_melody(event: NoteEvent, context: MusicalContext | None, offset: float = 0.0) -> bool:
     """主旋律そのものか（オクターブ違いは含めない）。"""
     if context is None:
         return False
-    melody = context.melody_at(event.tick / TICKS_PER_SECOND)
+    melody = context.melody_at(at_seconds(event, offset))
     return melody is not None and abs(event.midi - melody) <= MELODY_TOLERANCE
 
 
-def importance(event: NoteEvent, context: MusicalContext | None) -> float:
+def importance(event: NoteEvent, context: MusicalContext | None, offset: float = 0.0) -> float:
     """取捨に使う値。解析が無ければ音量そのまま（これまでの振る舞い）。"""
     if context is None:
         return event.velocity
-    return event.velocity + musical_weight(event, context)
+    return event.velocity + musical_weight(event, context, offset)
 
 
 @dataclass
@@ -257,6 +262,10 @@ class ArrangeConfig:
     #: 原音の解析結果（mcnb.musical.MusicalContext）。
     #: あれば、どの音を残すかを音量ではなく**音楽的な役割**で決める
     context: MusicalContext | None = None
+    #: 採譜と原音の時間のずれ（秒）。採譜の時刻にこれを足すと原音の時刻になる。
+    #: 曲ごとに違う（実測で -93ms 〜 +372ms）。ずれたまま突き合わせると、
+    #: 別の時刻の音を主旋律とみなして大きくしてしまう
+    time_offset: float = 0.0
 
     stats: dict = field(default_factory=dict)
 
@@ -389,7 +398,7 @@ def fold_harmonics(song: Song, config: ArrangeConfig) -> Song:
             louder_at[e.midi] = max(louder_at.get(e.midi, 0.0), e.velocity)
 
         for e in events:
-            if is_melody(e, config.context):
+            if is_melody(e, config.context, config.time_offset):
                 kept.append(e)
                 continue
             is_harmonic = False
@@ -432,7 +441,7 @@ def cap_density(song: Song, config: ArrangeConfig) -> Song:
     kept: list[NoteEvent] = []
     removed = 0
     for tick in sorted(by_tick):
-        events = sorted(by_tick[tick], key=lambda e: -importance(e, config.context))
+        events = sorted(by_tick[tick], key=lambda e: -importance(e, config.context, config.time_offset))
         kept.extend(events[: config.max_per_tick])
         removed += max(0, len(events) - config.max_per_tick)
 
@@ -467,7 +476,7 @@ def cap_concurrent(song: Song, config: ArrangeConfig) -> Song:
     if config.max_concurrent <= 0:
         return song
 
-    events = sorted(song.events, key=lambda e: (e.tick, -importance(e, config.context)))
+    events = sorted(song.events, key=lambda e: (e.tick, -importance(e, config.context, config.time_offset)))
     #: 鳴り終わる tick を、その音の大事さつきで持っておく
     ringing: list[tuple[int, float]] = []
     kept: list[NoteEvent] = []
@@ -477,7 +486,7 @@ def cap_concurrent(song: Song, config: ArrangeConfig) -> Song:
         inst = INSTRUMENTS.get(e.instrument)
         # 実測の減衰時間（-40dB）だけ鳴り続けるものとして数える
         length = max(1, round(inst.decay_ticks)) if inst else 2
-        weight = importance(e, config.context)
+        weight = importance(e, config.context, config.time_offset)
         ringing = [(end, w) for end, w in ringing if end > e.tick]
 
         if len(ringing) >= config.max_concurrent:
