@@ -30,6 +30,24 @@ transcribe = [
     "audio-separator[gpu]>=0.44",  # MIT（モデル重みは別ライセンス）
     "basic-pitch>=0.4.0",          # Apache-2.0
 ]
+# 音声入力: YouTube などの URL から音源を取る + 音源分離・採譜
+audio = [
+    "yt-dlp>=2026.1.1",            # Unlicense
+    "audio-separator[cpu]>=0.44",  # MIT（モデルの重みは別ライセンス）
+    # setuptools 81+ は pkg_resources を落としたが resampy がまだ要求する
+    "setuptools<81",
+    # audio-separator 0.44 は audioread を要求するが宣言していない。
+    # librosa 1.0 が audioread を落としたので明示的に入れる
+    "audioread>=3.0",
+    "audiotsm>=0.1.2",
+    "imageio-ffmpeg>=0.6.0",       # ffmpeg 同梱
+]
+# GUI: 1画面から全部やる
+gui = [
+    "fastapi>=0.120",
+    "uvicorn>=0.40",
+    "python-multipart>=0.0.20",
+]
 # 実機測定（v1）: スピーカー出力のループバック録音
 measure = [
     "PyAudioWPatch>=0.2.12.6 ; sys_platform == 'win32'",  # MIT / PyAudio の WASAPI ループバック対応フォーク
@@ -62,6 +80,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcnb"]
+artifacts = ["src/mcnb/gui.html"]
 
 [tool.ruff]
 line-length = 110

@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mcnb — 音符ブロック編曲</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=JetBrains+Mono:wght@400;700&display=swap">
+<style>
+:root {
+  --ground:#F2F1F5; --surface:#FFFFFF; --surface-2:#EAE8EF; --surface-3:#DFDCE7;
+  --line:#D6D3DE; --line-soft:#E4E2EA;
+  --text:#211F29; --text-2:#5B5766; --text-3:#8B8697;
+  --redstone:#B0352B; --redstone-bg:#F6E4E2;
+  --amethyst:#6D51B0; --amethyst-bg:#EBE5F7;
+  --ice:#2C7F93; --ice-bg:#DFEFF2;
+  --gold:#A0741F; --gold-bg:#F5EBD5;
+  --body:"Zen Kaku Gothic New","Hiragino Sans","Yu Gothic",system-ui,sans-serif;
+  --mono:"JetBrains Mono","SFMono-Regular",Consolas,monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground:#16151B; --surface:#1E1D25; --surface-2:#26242E; --surface-3:#2F2C39;
+    --line:#35323F; --line-soft:#2B2934;
+    --text:#EDEBF2; --text-2:#A8A3B4; --text-3:#7A7586;
+    --redstone:#E4796C; --redstone-bg:#3A211F;
+    --amethyst:#A98FE0; --amethyst-bg:#2A2340;
+    --ice:#6BBFD3; --ice-bg:#17323A;
+    --gold:#D9AE5B; --gold-bg:#33290F;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--text);font-family:var(--body);font-size:14px;line-height:1.7;-webkit-font-smoothing:antialiased}
+a{color:var(--ice)}
+h1{font-size:15px;font-weight:700;margin:0;letter-spacing:.02em}
+h2{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--text-3);margin:0 0 12px;font-weight:700}
+h3{font-size:13px;font-weight:700;margin:20px 0 8px}
+
+/* ---- shell ---- */
+header{display:flex;align-items:center;gap:14px;padding:12px 18px;background:var(--surface);border-bottom:1px solid var(--line);flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:9px}
+.logo{width:22px;height:22px;border-radius:4px;background:linear-gradient(135deg,var(--amethyst),var(--redstone));flex:none}
+.tag{font-family:var(--mono);font-size:10.5px;color:var(--text-3)}
+.status{margin-left:auto;display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--text-3)}
+.dot.run{background:var(--gold);animation:pulse 1.2s ease-in-out infinite}
+.dot.ok{background:var(--ice)} .dot.err{background:var(--redstone)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.dot.run{animation:none}}
+
+main{display:grid;grid-template-columns:296px minmax(0,1fr) 300px;gap:1px;background:var(--line);height:calc(100vh - 47px)}
+.pane{background:var(--ground);padding:18px;overflow-y:auto}
+.pane.log{background:var(--surface);padding:0;display:flex;flex-direction:column}
+
+/* ---- controls ---- */
+label{display:block;font-size:11.5px;color:var(--text-2);margin:12px 0 4px}
+input[type=text],input[type=number],select{
+  width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:4px;
+  background:var(--surface);color:var(--text);font-family:var(--body);font-size:13px}
+input:focus,select:focus{outline:2px solid var(--amethyst);outline-offset:-1px;border-color:transparent}
+.row{display:flex;gap:8px}
+.row>*{flex:1;min-width:0}
+
+button{
+  font-family:var(--body);font-size:13px;font-weight:700;cursor:pointer;
+  border:1px solid var(--line);border-radius:5px;background:var(--surface);color:var(--text);
+  padding:9px 12px;width:100%;text-align:left;display:flex;align-items:center;gap:9px;margin-bottom:6px}
+button:hover:not(:disabled){border-color:var(--amethyst);color:var(--amethyst)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button .k{font-family:var(--mono);font-size:9.5px;color:var(--text-3);margin-left:auto;font-weight:400}
+button.primary{background:var(--amethyst);border-color:var(--amethyst);color:#fff}
+button.primary:hover:not(:disabled){opacity:.9;color:#fff}
+button.danger{background:var(--redstone-bg);border-color:var(--redstone);color:var(--redstone)}
+button.mini{width:auto;padding:5px 10px;font-size:11.5px;margin:0}
+.hint{font-size:11px;color:var(--text-3);line-height:1.6;margin:6px 0 0}
+
+/* ---- log ---- */
+.logbar{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line-soft);background:var(--surface-2)}
+.logbar .name{font-family:var(--mono);font-size:11.5px;color:var(--text-2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+pre.out{flex:1;margin:0;padding:14px 16px;overflow:auto;font-family:var(--mono);font-size:12px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
+pre.out .ok{color:var(--ice)} pre.out .bad{color:var(--redstone)} pre.out .hd{color:var(--amethyst);font-weight:700}
+.empty{color:var(--text-3);padding:40px 16px;text-align:center;font-family:var(--body)}
+
+/* ---- results ---- */
+.card{background:var(--surface);border:1px solid var(--line);border-radius:5px;padding:11px 12px;margin-bottom:8px}
+.card .t{font-weight:700;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card .m{font-family:var(--mono);font-size:10.5px;color:var(--text-3);margin-top:2px}
+.chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
+.chip{font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:3px;background:var(--surface-2);color:var(--text-2);border:1px solid var(--line-soft)}
+.chip.on{background:var(--ice-bg);color:var(--ice);border-color:transparent}
+audio{width:100%;margin-top:8px;height:32px}
+img.plot{width:100%;border:1px solid var(--line);border-radius:5px;margin-bottom:8px;background:var(--surface)}
+.note{font-size:11.5px;color:var(--text-2);background:var(--gold-bg);border-left:3px solid var(--gold);padding:9px 11px;border-radius:0 4px 4px 0;margin:10px 0}
+
+@media (max-width:1100px){main{grid-template-columns:1fr;height:auto}.pane{max-height:none}.pane.log{min-height:50vh}}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="brand"><span class="logo"></span><h1>mcnb</h1></span>
+  <span class="tag">音源 → 音符ブロック / Minecraft 26.2</span>
+  <span class="status"><span class="dot" id="dot"></span><span id="statusText">待機中</span></span>
+</header>
+
+<main>
+  <!-- ================= 左: 操作 ================= -->
+  <section class="pane">
+    <h2>入力</h2>
+    <label for="url">YouTube などの URL</label>
+    <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=...">
+    <label for="file">またはファイル（mp3 / wav / mid / nbs）</label>
+    <input type="text" id="file" placeholder="path/to/song.mp3">
+    <label for="testsel">またはテスト曲</label>
+    <select id="testsel"><option value="">—</option></select>
+
+    <h3>設定</h3>
+    <div class="row">
+      <div><label for="world">ワールド名</label><input type="text" id="world" value="mcnb_song"></div>
+      <div><label for="poly">同時発音上限</label><input type="number" id="poly" value="200" min="1" max="4095"></div>
+    </div>
+    <p class="hint">バニラは 247 まで。Raise Sound Limit Simplified を入れてあるので 4095 まで上げられるが、上げるほど濁る。</p>
+
+    <h3>作る</h3>
+    <button class="primary" data-act="build"><span>▶</span>音源から作ってワールドまで<span class="k">build --world</span></button>
+    <button data-act="build-only"><span>◆</span>データパックだけ作る<span class="k">build</span></button>
+
+    <h3>確かめる</h3>
+    <button data-act="verify"><span>✓</span>サーバで実機検証<span class="k">verify</span></button>
+    <button data-act="test"><span>≡</span>テスト曲 1-10 を通す<span class="k">test</span></button>
+
+    <h3>実機測定</h3>
+    <button data-act="selftest"><span>♪</span>録音経路の確認<span class="k">measure --selftest</span></button>
+    <button data-act="measure"><span>◎</span>測定を始める<span class="k">measure</span></button>
+    <p class="hint">測定は Minecraft の接続が要る。開始したらランチャーで「mcnb (音ブロック)」を起動し、マルチプレイ → 直接接続 → <code>localhost:25566</code>。</p>
+
+    <h3>準備</h3>
+    <button data-act="setup"><span>⚙</span>音源抽出 + Fabric + 軽量化Mod<span class="k">setup</span></button>
+
+    <button class="danger" id="stop" disabled style="margin-top:16px"><span>■</span>停止</button>
+  </section>
+
+  <!-- ================= 中: ログ ================= -->
+  <section class="pane log">
+    <div class="logbar">
+      <span class="name" id="jobName">まだ何も動かしていません</span>
+      <button class="mini" id="clear">消去</button>
+    </div>
+    <pre class="out" id="out"><div class="empty">左のボタンを押すと、ここに進行が流れます。</div></pre>
+  </section>
+
+  <!-- ================= 右: 結果 ================= -->
+  <section class="pane">
+    <h2>試聴</h2>
+    <div id="audioList"><p class="hint">URL から取り込むと、ここで原曲が聴けます。</p></div>
+
+    <h2 style="margin-top:22px">出力</h2>
+    <div id="outputs"><p class="hint">まだありません。</p></div>
+
+    <h2 style="margin-top:22px">ワールド</h2>
+    <div id="worlds"><p class="hint">まだありません。</p></div>
+
+    <h2 style="margin-top:22px">測定結果</h2>
+    <div id="plots"><p class="hint">まだ測定していません。</p></div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const out = $('#out'), dot = $('#dot'), statusText = $('#statusText');
+let currentJob = null, source = null;
+
+function inputValue() {
+  return $('#url').value.trim() || $('#file').value.trim() ||
+         ($('#testsel').value ? `tests/inputs/${$('#testsel').value}.mid` : '');
+}
+
+const ACTIONS = {
+  build:      () => { const i = inputValue(); return i && {label:`作る: ${i}`, args:['build', i, '--world', $('#world').value.trim() || 'mcnb_song', '--max-polyphony', $('#poly').value]}; },
+  'build-only':() => { const i = inputValue(); return i && {label:`データパック: ${i}`, args:['build', i, '--max-polyphony', $('#poly').value]}; },
+  verify:     () => { const i = inputValue(); return i && {label:`検証: ${i}`, args:['verify', i]}; },
+  test:       () => ({label:'テスト曲 1-10', args:['test']}),
+  selftest:   () => ({label:'録音経路の確認', args:['measure','--selftest']}),
+  measure:    () => ({label:'実機測定', args:['measure']}),
+  setup:      () => ({label:'セットアップ', args:['setup']}),
+};
+
+document.querySelectorAll('button[data-act]').forEach(b => {
+  b.addEventListener('click', () => {
+    const spec = ACTIONS[b.dataset.act]();
+    if (!spec) { alert('入力（URL / ファイル / テスト曲）を指定してください。'); return; }
+    start(spec);
+  });
+});
+
+$('#stop').addEventListener('click', async () => {
+  await fetch('/api/stop', {method:'POST', headers:{'Content-Type':'application/json'},
+                            body: JSON.stringify({id: currentJob})});
+});
+$('#clear').addEventListener('click', () => { out.textContent = ''; });
+
+async function start(spec) {
+  const res = await fetch('/api/run', {method:'POST', headers:{'Content-Type':'application/json'},
+                                       body: JSON.stringify(spec)});
+  if (!res.ok) { alert((await res.json()).detail || '起動できませんでした'); return; }
+  const job = await res.json();
+  currentJob = job.id;
+  out.textContent = '';
+  $('#jobName').textContent = `${job.label}  —  mcnb ${job.args.join(' ')}`;
+  setRunning(true);
+  listen(job.id);
+}
+
+function setRunning(on, ok) {
+  dot.className = 'dot' + (on ? ' run' : ok === undefined ? '' : ok ? ' ok' : ' err');
+  statusText.textContent = on ? '実行中' : ok === undefined ? '待機中' : ok ? '完了' : '失敗';
+  document.querySelectorAll('button[data-act]').forEach(b => b.disabled = on);
+  $('#stop').disabled = !on;
+}
+
+function append(line) {
+  const div = document.createElement('div');
+  if (/^■/.test(line)) div.className = 'hd';
+  else if (/✅|OK|通過|完了/.test(line)) div.className = 'ok';
+  else if (/❌|エラー|失敗|Traceback|Error/.test(line)) div.className = 'bad';
+  div.textContent = line;
+  const atBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 40;
+  out.appendChild(div);
+  if (atBottom) out.scrollTop = out.scrollHeight;
+}
+
+function listen(id) {
+  if (source) source.close();
+  source = new EventSource(`/api/log/${id}`);
+  source.onmessage = e => {
+    const data = JSON.parse(e.data);
+    if (data.line !== undefined) append(data.line);
+    if (data.done) {
+      source.close(); source = null;
+      setRunning(false, data.returncode === 0);
+      refresh();
+    }
+  };
+}
+
+async function refresh() {
+  const s = await (await fetch('/api/state')).json();
+
+  const sel = $('#testsel');
+  if (sel.options.length <= 1) {
+    s.tests.forEach(t => sel.add(new Option(t, t)));
+  }
+
+  $('#audioList').innerHTML = s.cached.length ? s.cached.map(c => `
+    <div class="card">
+      <div class="t">${esc(c.title || c.id)}</div>
+      <div class="m">${esc(c.uploader || '')} ${c.duration ? fmt(c.duration) : ''}</div>
+      <audio controls preload="none" src="/api/file?path=${encodeURIComponent('cache/audio/' + c.id + '.wav')}"></audio>
+    </div>`).join('') : '<p class="hint">URL から取り込むと、ここで原曲が聴けます。</p>';
+
+  $('#outputs').innerHTML = s.outputs.length ? s.outputs.slice().reverse().map(o => `
+    <div class="card">
+      <div class="t">${esc(o.name)}</div>
+      <div class="m">${o.functions} 関数</div>
+      <div class="chips"><span class="chip on">datapack</span>${o.nbs ? '<span class="chip">nbs</span>' : ''}</div>
+    </div>`).join('') : '<p class="hint">まだありません。</p>';
+
+  $('#worlds').innerHTML = s.worlds.length
+    ? `<div class="card"><div class="chips">${s.worlds.map(w => `<span class="chip on">${esc(w)}</span>`).join('')}</div>
+       <div class="m" style="margin-top:8px">ランチャーで「mcnb (音ブロック)」を起動して開く</div></div>`
+    : '<p class="hint">まだありません。</p>';
+
+  $('#plots').innerHTML = s.measure_images.length
+    ? s.measure_images.map(p => `<img class="plot" src="/api/file?path=${encodeURIComponent(p)}&t=${Date.now()}" alt="${esc(p)}">`).join('')
+    : '<p class="hint">まだ測定していません。</p>';
+
+  if (!s.assets_ready) {
+    $('#outputs').insertAdjacentHTML('beforebegin',
+      '<div class="note">音符ブロック音源がまだ抽出されていません。左の「セットアップ」を先に押してください。</div>');
+  }
+
+  if (s.current && s.current.running && !currentJob) {
+    currentJob = s.current.id;
+    $('#jobName').textContent = `${s.current.label}  —  mcnb ${s.current.args.join(' ')}`;
+    setRunning(true);
+    listen(s.current.id);
+  }
+}
+
+const esc = t => String(t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmt = s => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
+
+refresh();
+setInterval(() => { if (!currentJob) refresh(); }, 5000);
+</script>
+</body>
+</html>

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -46,7 +47,19 @@ def run_hyperchoron(src: Path, dest: Path, extra: list[str] | None = None, quiet
     ]
     if not quiet:
         print("  $ " + " ".join(cmd[2:]))
-    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+    # audio-separator は PATH 上の ffmpeg を要求する。imageio-ffmpeg の同梱を通す
+    from . import fetch as fetch_mod
+
+    env = dict(os.environ)
+    bin_dir = fetch_mod.ensure_ffmpeg_on_path()
+    if bin_dir:
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+    env["PYTHONIOENCODING"] = "utf-8"
+
+    proc = subprocess.run(
+        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env
+    )
     if proc.returncode != 0 or not dest.is_file():
         sys.stderr.write(proc.stdout or "")
         sys.stderr.write(proc.stderr or "")
@@ -60,6 +73,22 @@ class BuildResult:
     layout: layout.Layout
     pack: datapack.DatapackResult
     nbs: Path
+
+
+def resolve_input(source: str, cache: Path = Path("cache/audio")) -> tuple[Path, str | None]:
+    """入力が URL なら落としてローカルのパスにする。``(path, タイトル)`` を返す。"""
+    from . import fetch as fetch_mod
+
+    if not fetch_mod.is_url(source):
+        return Path(source), None
+
+    print(f"■ URL から取得: {source}")
+    media = fetch_mod.fetch(source, cache)
+    print()
+    print(f"  {media.title} / {media.uploader}")
+    print(f"  {int(media.duration) // 60}:{int(media.duration) % 60:02d}"
+          + ("  (キャッシュ済み)" if media.cached else ""))
+    return media.path, media.slug
 
 
 def build_one(
@@ -106,7 +135,12 @@ def build_one(
 
 
 def cmd_build(args: argparse.Namespace) -> int:
-    src = Path(args.input)
+    try:
+        src, fetched_name = resolve_input(args.input)
+    except Exception as e:  # noqa: BLE001
+        print(f"エラー: {e}", file=sys.stderr)
+        return 1
+
     if not src.is_file():
         print(f"エラー: {src} がありません", file=sys.stderr)
         return 1
@@ -116,7 +150,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         result = build_one(
             src,
             Path(args.out),
-            name=args.name,
+            name=args.name or fetched_name,
             origin=tuple(args.origin),
             spacing=args.spacing,
             max_polyphony=args.max_polyphony,
@@ -230,6 +264,14 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
+def cmd_gui(args: argparse.Namespace) -> int:
+    """1画面から全部やる GUI を立てる。"""
+    from . import gui
+
+    gui.serve(args.host, args.port, open_browser=not args.no_browser)
+    return 0
+
+
 def cmd_measure(args: argparse.Namespace) -> int:
     """実機測定リグを回す。クライアントの接続が要る。"""
     from . import audio, measure
@@ -296,7 +338,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("build", help="音源/MIDI/NBS → データパック")
-    p.add_argument("input")
+    p.add_argument("input", help="音源ファイル / MIDI / NBS / YouTube などの URL")
     p.add_argument("--name", default=None)
     p.add_argument("--out", default=str(DEFAULT_OUT))
     p.add_argument("--origin", type=int, nargs=3, default=[0, layout.FLAT_SURFACE_Y, 0],
@@ -328,6 +370,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--memory", default="2G")
     p.set_defaults(func=cmd_world)
+
+    p = sub.add_parser("gui", help="1画面から全部やる GUI（ブラウザ）")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8770)
+    p.add_argument("--no-browser", action="store_true")
+    p.set_defaults(func=cmd_gui)
 
     p = sub.add_parser("measure", help="実機測定リグ（要クライアント接続）")
     p.add_argument("--only", nargs="*", default=None,
