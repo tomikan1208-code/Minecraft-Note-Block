@@ -95,6 +95,62 @@ def musical_weight(event: NoteEvent, context: MusicalContext, offset: float = 0.
 
 
 # --------------------------------------------------------------------------- #
+# 上に重ねて明るくする
+# --------------------------------------------------------------------------- #
+
+#: 重ねに使う楽器。上から順に、音が入る範囲のものを使う。
+#: chime は減衰 15.9 tick で全楽器中いちばん長い。明るさと同時に**余韻**が出る。
+SPARKLE_VOICES = ("chime", "bell", "flute")
+#: 重ねる音の音量。元の音に対する倍率。主役ではないので控えめに
+SPARKLE_GAIN = 0.55
+#: これより低い音には重ねない。低音に高い倍音を足しても濁るだけ
+SPARKLE_MIN_MIDI = 55
+
+
+def sparkle(song: Song, config: ArrangeConfig) -> Song:
+    """各 tick の一番高い音の 1 オクターブ上を、明るい楽器で重ねる。
+
+    採譜は音を **MIDI 48〜78 の 2.5 オクターブ**に畳んでしまう（hyperchoron の
+    音符ブロック割り当ての都合）。そのため人が作った音符ブロック演奏に比べて
+    **暗い**。実測でスペクトル重心が 1197Hz、お手本は 1328〜1655Hz。
+    高域の割合も 17% 対 21〜30%。
+
+    音符ブロック演奏の「らしさ」は上の音域のきらめきにある。
+    bell・chime・xylophone（MIDI 78〜102）を一つも使っていなかった。
+
+    **音は消さずに足すだけ**なので、間引きの良し悪しとは独立に効く。
+    """
+    if not config.sparkle:
+        return song
+
+    by_tick: dict[int, list[NoteEvent]] = defaultdict(list)
+    for e in song.events:
+        if e.instrument not in PERCUSSION:
+            by_tick[e.tick].append(e)
+
+    added: list[NoteEvent] = []
+    for events in by_tick.values():
+        # 上から順に、指定された数だけ重ねる。1 tick に十数音あるので、
+        # 1 声だけだと全体の明るさはほとんど動かない
+        for source in sorted(events, key=lambda e: -e.midi)[: max(1, config.sparkle_voices)]:
+            if source.midi < SPARKLE_MIN_MIDI:
+                break
+            target = source.midi + 12
+            for name in SPARKLE_VOICES:
+                inst = INSTRUMENTS.get(name)
+                if inst and inst.base_midi <= target <= inst.base_midi + 24:
+                    added.append(
+                        replace(source, instrument=name, midi=target,
+                                velocity=max(0.02, min(1.0, source.velocity * config.sparkle_gain)))
+                    )
+                    break
+
+    config.stats["sparkle"] = len(added)
+    events = sorted(song.events + added, key=lambda e: (e.tick, -e.velocity))
+    return Song(name=song.name, events=events, source=song.source)
+
+
+# --------------------------------------------------------------------------- #
 # 拍の格子に割り付ける
 # --------------------------------------------------------------------------- #
 
@@ -351,6 +407,13 @@ class ArrangeConfig:
     #: 実際に重なっている数は減らない。雑音らしさ（spectral flatness）は
     #: 音数ではなく**重なりの数**で決まることが実測で分かったので、こちらを制御する。
     max_concurrent: int = 0
+
+    #: 最上声部の 1 オクターブ上を明るい楽器で重ねる
+    sparkle: bool = False
+    #: 上から何声を重ねるか
+    sparkle_voices: int = 1
+    #: 重ねる音の音量（元に対する倍率）
+    sparkle_gain: float = SPARKLE_GAIN
 
     #: 音符を拍の格子に載せ、1 枠に 1 音だけ残す
     quantize: bool = True
@@ -614,6 +677,8 @@ def cap_concurrent(song: Song, config: ArrangeConfig) -> Song:
 
 #: 掛ける順番。倍音を落としてから重複を消し、最後に密度を切る
 PIPELINE = [
+    # 重ねるのは最初。あとの間引きや上限は、重ねたぶんも含めて数えてほしい
+    ("sparkle", sparkle, "sparkle"),
     # 格子への割り付けが最初。ここで tick が動くので、あとの処理は
     # 動いたあとの位置で数えないと辻褄が合わない
     ("quantize", quantize, "quantize"),
