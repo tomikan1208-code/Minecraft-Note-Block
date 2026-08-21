@@ -30,6 +30,11 @@ transcribe = [
     "audio-separator[gpu]>=0.44",  # MIT（モデル重みは別ライセンス）
     "basic-pitch>=0.4.0",          # Apache-2.0
 ]
+# 実機測定（v1）: スピーカー出力のループバック録音
+measure = [
+    "PyAudioWPatch>=0.2.12.6 ; sys_platform == 'win32'",  # MIT / PyAudio の WASAPI ループバック対応フォーク
+    "matplotlib>=3.10",
+]
 # 評価指標
 eval = [
     "mir_eval>=0.8",

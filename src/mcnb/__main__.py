@@ -230,6 +230,30 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
+def cmd_measure(args: argparse.Namespace) -> int:
+    """実機測定リグを回す。クライアントの接続が要る。"""
+    from . import audio, measure
+
+    if args.selftest:
+        ok, message = audio.selftest()
+        print(("OK  " if ok else "NG  ") + message)
+        return 0 if ok else 1
+
+    try:
+        report = measure.run(
+            only=args.only, out_dir=Path(args.out), memory=args.memory, wait=args.wait
+        )
+    except (measure.ServerError, audio.AudioError, ValueError) as e:
+        print(f"エラー: {e}", file=sys.stderr)
+        return 1
+
+    if "distance" in report.sections:
+        print("\n■ 距離減衰の判定")
+        for line in measure.analyze_distance(report.sections["distance"]).splitlines():
+            print("  " + line)
+    return 0
+
+
 def cmd_world(args: argparse.Namespace) -> int:
     """演奏専用ワールドを新規生成する。"""
     from . import world as world_mod
@@ -298,12 +322,21 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-polyphony", type=int, default=200)
     p.set_defaults(func=cmd_test)
 
-    p = sub.add_parser("world", help="演奏専用ワールドを新規生成する（チートON/クリエイティブ/ボイド）")
+    p = sub.add_parser("world", help="演奏専用ワールドを新規生成する（チートON/クリエイティブ/フラット）")
     p.add_argument("--name", default="mcnb")
     p.add_argument("--datapack", default=None, help="同時に入れるデータパックのディレクトリ")
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--memory", default="2G")
     p.set_defaults(func=cmd_world)
+
+    p = sub.add_parser("measure", help="実機測定リグ（要クライアント接続）")
+    p.add_argument("--only", nargs="*", default=None,
+                   help="distance / instruments / pitch / panning")
+    p.add_argument("--out", default="out/measure")
+    p.add_argument("--memory", default="2G")
+    p.add_argument("--wait", type=float, default=600.0, help="クライアント接続を待つ秒数")
+    p.add_argument("--selftest", action="store_true", help="録音経路だけ確認して終わる")
+    p.set_defaults(func=cmd_measure)
 
     p = sub.add_parser("verify", help="headless サーバで実際に動かして検証する")
     p.add_argument("input")
