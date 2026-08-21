@@ -1,4 +1,6 @@
 * text=auto eol=lf
+# バッチは cmd に合わせて CRLF + cp932 のまま扱う
+*.bat text eol=crlf working-tree-encoding=CP932
 *.ogg binary
 *.litematic binary
 *.nbs binary

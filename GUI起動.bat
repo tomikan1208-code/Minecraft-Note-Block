@@ -1,38 +1,38 @@
 @echo off
 setlocal
-rem mcnb GUI ƒ‰ƒ“ƒ`ƒƒ[
-rem  ƒ_ƒuƒ‹ƒNƒŠƒbƒN‚Å‹N“®‚Å‚«‚Ü‚·B
+rem mcnb GUI ãƒ©ãƒ³ãƒãƒ£ãƒ¼
+rem  ãƒ€ãƒ–ãƒ«ã‚¯ãƒªãƒƒã‚¯ã§èµ·å‹•ã§ãã¾ã™ã€‚
 
 cd /d "%~dp0"
 
 echo.
-echo   mcnb - ‰¹•„ƒuƒƒbƒN•Ò‹È
+echo   mcnb - éŸ³ç¬¦ãƒ–ãƒ­ãƒƒã‚¯ç·¨æ›²
 echo   ----------------------------------------
 echo.
 
 where uv >nul 2>&1
 if errorlevel 1 (
-  echo   [ƒGƒ‰[] uv ‚ªŒ©‚Â‚©‚è‚Ü‚¹‚ñB
-  echo   https://docs.astral.sh/uv/ ‚©‚çƒCƒ“ƒXƒg[ƒ‹‚µ‚Ä‚­‚¾‚³‚¢B
+  echo   [ã‚¨ãƒ©ãƒ¼] uv ãŒè¦‹ã¤ã‹ã‚Šã¾ã›ã‚“ã€‚
+  echo   https://docs.astral.sh/uv/ ã‹ã‚‰ã‚¤ãƒ³ã‚¹ãƒˆãƒ¼ãƒ«ã—ã¦ãã ã•ã„ã€‚
   echo.
   pause
   exit /b 1
 )
 
-echo   ˆË‘¶‚ðŠm”F‚µ‚Ä‚¢‚Ü‚·...
+echo   ä¾å­˜ã‚’ç¢ºèªã—ã¦ã„ã¾ã™...
 uv sync --extra gui --extra audio --extra measure
 if errorlevel 1 (
   echo.
-  echo   [ƒGƒ‰[] ˆË‘¶‚Ì€”õ‚ÉŽ¸”s‚µ‚Ü‚µ‚½B
-  echo   Minecraft ‚â•Ê‚Ì mcnb ‚ª‹N“®’†‚¾‚ÆŽ¸”s‚·‚é‚±‚Æ‚ª‚ ‚è‚Ü‚·B
-  echo   •Â‚¶‚Ä‚©‚ç‚à‚¤ˆê“xŽŽ‚µ‚Ä‚­‚¾‚³‚¢B
+  echo   [ã‚¨ãƒ©ãƒ¼] ä¾å­˜ã®æº–å‚™ã«å¤±æ•—ã—ã¾ã—ãŸã€‚
+  echo   Minecraft ã‚„åˆ¥ã® mcnb ãŒèµ·å‹•ä¸­ã ã¨å¤±æ•—ã™ã‚‹ã“ã¨ãŒã‚ã‚Šã¾ã™ã€‚
+  echo   é–‰ã˜ã¦ã‹ã‚‰ã‚‚ã†ä¸€åº¦è©¦ã—ã¦ãã ã•ã„ã€‚
   echo.
   pause
   exit /b 1
 )
 
 echo.
-echo   ƒuƒ‰ƒEƒU‚ðŠJ‚«‚Ü‚·B•Â‚¶‚é‚É‚ÍA‚±‚Ì•‚¢‘‹‚Å Ctrl+C ‚ð‰Ÿ‚·‚©‘‹‚ð•Â‚¶‚Ä‚­‚¾‚³‚¢B
+echo   ãƒ–ãƒ©ã‚¦ã‚¶ã‚’é–‹ãã¾ã™ã€‚é–‰ã˜ã‚‹ã«ã¯ã€ã“ã®é»’ã„çª“ã§ Ctrl+C ã‚’æŠ¼ã™ã‹çª“ã‚’é–‰ã˜ã¦ãã ã•ã„ã€‚
 echo.
 
 uv run mcnb gui
@@ -40,7 +40,7 @@ set RC=%errorlevel%
 
 if not "%RC%"=="0" (
   echo.
-  echo   [ƒGƒ‰[] I—¹ƒR[ƒh %RC%
+  echo   [ã‚¨ãƒ©ãƒ¼] çµ‚äº†ã‚³ãƒ¼ãƒ‰ %RC%
   pause
 )
 endlocal
