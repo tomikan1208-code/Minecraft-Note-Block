@@ -73,6 +73,13 @@ DIATONIC_BONUS = 0.10
 #: 調を決めるとき、コード進行との整合をクロマの偏りに対してどれだけ重く見るか。
 #: クロマだけでは平行調・同主調が決まらないので、ここが要る。
 KEY_CHORD_WEIGHT = 0.6
+#: 調を見る窓の長さ（秒）。曲の途中で転調しても追えるようにするため。
+#: 短くすると転調に速く追従するが、部分的なコードの揺れも転調と見なしてしまう。
+KEY_WINDOW = 20.0
+#: 窓をずらす幅（秒）
+KEY_HOP = 5.0
+#: 同じ調に留まりやすくする重み。転調はそう頻繁には起きない
+KEY_SELF_BONUS = 0.5
 #: 「コードなし」と判断する境目。**曲ごとの手応えの中央値に対する比**で決める。
 #: 絶対値で決めると曲をまたげない。0.55 固定で測ると、真っ黒ピアノでは 6% が N
 #: なのに歌ものでは 31% が N になった — 曲全体の相関の高さが編成や音の混み具合で
@@ -123,6 +130,15 @@ class Key:
 
 
 @dataclass(frozen=True)
+class KeySpan:
+    """ある区間の調。転調する曲では複数になる。"""
+
+    start: float
+    end: float
+    key: Key
+
+
+@dataclass(frozen=True)
 class Chord:
     """ある区間で鳴っているコード。"""
 
@@ -161,6 +177,8 @@ class MusicalContext:
     beats: list[float] = field(default_factory=list)        # 秒
     downbeats: list[float] = field(default_factory=list)
     key: Key | None = None
+    #: 区間ごとの調。転調しなければ 1 個
+    keys: list[KeySpan] = field(default_factory=list)
     chords: list[Chord] = field(default_factory=list)
     #: 主旋律。(秒, MIDIノート番号)。鳴っていない区間は入らない
     melody: list[tuple[float, float]] = field(default_factory=list)
@@ -207,6 +225,13 @@ class MusicalContext:
             self._mt_cache = cached
         return cached
 
+    def key_at(self, seconds: float) -> Key | None:
+        """その時刻の調。転調を追っているので場所で変わる。"""
+        for span in self.keys:
+            if span.start <= seconds < span.end:
+                return span.key
+        return self.key
+
     def beat_index(self, seconds: float) -> int:
         """その時刻が何拍目か。拍より前なら -1。"""
         return int(np.searchsorted(self.beats, seconds, side="right")) - 1
@@ -223,7 +248,12 @@ class MusicalContext:
                 f"長さ    : {self.duration:.1f} 秒",
                 f"テンポ  : {self.tempo:.1f} BPM  拍 {len(self.beats)} 個 / 小節頭 {len(self.downbeats)} 個",
                 f"調      : {self.key.name if self.key else '不明'}"
-                + (f"  (確信度 {self.key.confidence:.2f})" if self.key else ""),
+                + (f"  (確信度 {self.key.confidence:.2f})" if self.key else "")
+                + (
+                    "  転調 " + " → ".join(s.key.name for s in self.keys)
+                    if len(self.keys) > 1
+                    else ""
+                ),
                 f"コード  : {len(self.chords)} 区間 / 異なり {len(set(c.name for c in self.chords))} 種",
                 f"  進行  : {' → '.join(uniq[:20])}" + (" …" if len(uniq) > 20 else ""),
                 f"主旋律  : {melody_seconds:.1f} 秒ぶん ({share:.0f}%)"
@@ -244,6 +274,10 @@ class MusicalContext:
             "beats": self.beats,
             "downbeats": self.downbeats,
             "key": ({**asdict(self.key), "name": self.key.name} if self.key else None),
+            "keys": [
+                {"start": s.start, "end": s.end, **asdict(s.key), "name": s.key.name}
+                for s in self.keys
+            ],
             "chords": [{**asdict(c), "name": c.name} for c in self.chords],
             "melody": [[t, p] for t, p in self.melody],
             "melody_source": self.melody_source,
@@ -404,6 +438,83 @@ def estimate_key(chroma: np.ndarray, chords: list[Chord] | None = None) -> Key:
     return Key(tonic=best[0], minor=best[1], confidence=best[2])
 
 
+def _key_score_vector(profile: np.ndarray, chords: list[Chord] | None) -> np.ndarray:
+    """24 通りの調それぞれの点数。並びは ``minor * 12 + tonic``。"""
+    scores = np.zeros(24, dtype=np.float32)
+    for minor, template in ((False, MAJOR_PROFILE), (True, MINOR_PROFILE)):
+        centred = template - template.mean()
+        centred = centred / np.linalg.norm(centred)
+        for tonic in range(12):
+            score = float(profile @ np.roll(centred, tonic))
+            if chords:
+                score += KEY_CHORD_WEIGHT * _chord_agreement(tonic, minor, chords)
+            scores[int(minor) * 12 + tonic] = score
+    return scores
+
+
+def _centred_profile(chroma: np.ndarray) -> np.ndarray | None:
+    profile = chroma.mean(axis=1)
+    profile = profile - profile.mean()
+    norm = np.linalg.norm(profile)
+    return None if norm < 1e-9 else profile / norm
+
+
+def estimate_keys(
+    chroma: np.ndarray, sr: int, chords: list[Chord], duration: float
+) -> list[KeySpan]:
+    """区間ごとに調を出す。曲の途中の転調を追うため。
+
+    曲全体で 1 つの調と決めつけると、転調する曲では**曲のどこかが必ず外れる**。
+    調はコード推定の下駄にしか使っていないので、外れた調の下駄は
+    そのままコードの誤りになる。
+
+    窓ごとに出したあと、同じ調に留まりやすい重みで均す。転調はそう頻繁には
+    起きないので、均さないと窓ごとにばらつく。
+    """
+    window = max(8.0, min(KEY_WINDOW, duration / 4.0))
+    starts = np.arange(0.0, max(duration - window, 0.0) + KEY_HOP, KEY_HOP)
+    if len(starts) == 0:
+        starts = np.array([0.0])
+
+    frames_per_second = sr / HOP
+    rows: list[np.ndarray] = []
+    for start in starts:
+        end = min(start + window, duration)
+        lo = int(start * frames_per_second)
+        hi = max(lo + 1, int(end * frames_per_second))
+        profile = _centred_profile(chroma[:, lo:hi])
+        if profile is None:
+            profile = np.zeros(12, dtype=np.float32)
+        local = [c for c in chords if c.end > start and c.start < end]
+        rows.append(_key_score_vector(profile, local))
+
+    path = _viterbi(np.stack(rows), KEY_SELF_BONUS)
+
+    spans: list[KeySpan] = []
+    for i, state in enumerate(path):
+        tonic, minor = int(state % 12), bool(state // 12)
+        start = float(starts[i])
+        end = float(starts[i + 1]) if i + 1 < len(starts) else duration
+        key = Key(tonic=tonic, minor=minor, confidence=float(rows[i][state]))
+        if spans and (spans[-1].key.tonic, spans[-1].key.minor) == (tonic, minor):
+            prev = spans[-1]
+            better = prev.key if prev.key.confidence >= key.confidence else key
+            spans[-1] = KeySpan(start=prev.start, end=end, key=better)
+        else:
+            spans.append(KeySpan(start=start, end=end, key=key))
+    if spans:
+        spans[0] = KeySpan(start=0.0, end=spans[0].end, key=spans[0].key)
+        spans[-1] = KeySpan(start=spans[-1].start, end=duration, key=spans[-1].key)
+    return spans
+
+
+def main_key(spans: list[KeySpan]) -> Key | None:
+    """一番長く続いた調。表示や、転調を追わない相手に渡すため。"""
+    if not spans:
+        return None
+    return max(spans, key=lambda s: s.end - s.start).key
+
+
 # --------------------------------------------------------------------------- #
 # コード
 # --------------------------------------------------------------------------- #
@@ -471,8 +582,29 @@ def _viterbi(scores: np.ndarray, self_bonus: float) -> np.ndarray:
     return path
 
 
-def estimate_chords(chroma: np.ndarray, beats: np.ndarray, sr: int, key: Key | None) -> list[Chord]:
-    """拍ごとにコードを当てる。"""
+def _segment_edges(beats: np.ndarray, n_segments: int, duration: float) -> list[float]:
+    """拍から、区間の境目（秒）を作る。境目の数は区間の数 + 1。
+
+    区間は音の頭から終わりまで隙間なく覆う。最初の拍は曲頭より後ろにあるので、
+    そこを空けると冒頭が丸ごと「コードなし」になってしまう。
+    """
+    edges = [0.0]
+    for t in beats:
+        if float(t) > edges[-1]:
+            edges.append(float(t))
+    edges.append(max(duration, edges[-1]))
+    # 想定と合わなければ、区間の数に合わせて詰める（ずらすよりは切るほうが安全）
+    return edges[: n_segments + 1]
+
+
+def estimate_chords(
+    chroma: np.ndarray, beats: np.ndarray, sr: int, key: Key | list[KeySpan] | None
+) -> list[Chord]:
+    """拍ごとにコードを当てる。
+
+    ``key`` に ``KeySpan`` の並びを渡すと、**拍ごとにその場所の調**で
+    調内の下駄を掛ける。転調する曲ではこれが要る。
+    """
     import librosa
 
     if len(beats) < 2:
@@ -485,8 +617,32 @@ def estimate_chords(chroma: np.ndarray, beats: np.ndarray, sr: int, key: Key | N
     synced = synced - synced.mean(axis=0, keepdims=True)
     synced = synced / np.maximum(np.linalg.norm(synced, axis=0, keepdims=True), 1e-9)
 
-    templates, labels, prior = _chord_templates(key)
-    scores = templates @ synced + prior[:, None]     # (状態数, 拍数)
+    # librosa.util.sync は境界の**あいだ**を区間にするので、最初の拍より前と
+    # 最後の拍より後にも区間ができる。拍の数と区間の数は一致しない。
+    # ここを取り違えると、全部のコードが 1 拍ぶんずれる。
+    edges = _segment_edges(beats, synced.shape[1], chroma.shape[1] * HOP / sr)
+
+    spans = key if isinstance(key, list) else None
+    templates, labels, prior = _chord_templates(spans[0].key if spans else key)
+    scores = templates @ synced                      # (状態数, 拍数)
+
+    if spans:
+        # 拍ごとに、その時刻の調の下駄を掛ける
+        priors = {}
+        for span in spans:
+            ident = (span.key.tonic, span.key.minor)
+            if ident not in priors:
+                priors[ident] = _chord_templates(span.key)[2]
+        def key_ident(at: float) -> tuple[int, bool]:
+            for span in spans:
+                if span.start <= at < span.end:
+                    return span.key.tonic, span.key.minor
+            return spans[-1].key.tonic, spans[-1].key.minor
+
+        middles = [(edges[i] + edges[i + 1]) / 2 for i in range(len(edges) - 1)]
+        scores = scores + np.stack([priors[key_ident(t)] for t in middles], axis=1)
+    else:
+        scores = scores + prior[:, None]
 
     # 「コードなし」も同じ土俵で競わせる。均したあとで足切りすると、
     # せっかく繋がったコードが N と交互になってちらつく。
@@ -497,10 +653,6 @@ def estimate_chords(chroma: np.ndarray, beats: np.ndarray, sr: int, key: Key | N
 
     path = _viterbi(scores.T, CHORD_SELF_BONUS)
 
-    # 区間は音の頭から終わりまで隙間なく覆う。最初の拍は曲頭より後ろにあるので、
-    # そのままだと冒頭が「コードなし」になってしまう
-    edges = [float(t) for t in beats] + [chroma.shape[1] * HOP / sr]
-    edges[0] = 0.0
     chords: list[Chord] = []
     for i, state in enumerate(path):
         if i + 1 >= len(edges):
@@ -695,13 +847,13 @@ def analyze(
 
     # 一度コードを出してから、それを証拠にして調を決め直す。
     # 調が変わればコードの下駄も変わるので、もう一度だけ回す。
-    key = estimate_key(chroma)
-    chords = estimate_chords(chroma, beats, sr, key)
-    refined = estimate_key(chroma, chords)
-    if (refined.tonic, refined.minor) != (key.tonic, key.minor):
-        say(f"調を {key.name} から {refined.name} に見直しました（コード進行から）")
-        key = refined
-        chords = estimate_chords(chroma, beats, sr, key)
+    duration = len(y) / sr
+    chords = estimate_chords(chroma, beats, sr, estimate_key(chroma))
+    spans = estimate_keys(chroma, sr, chords, duration)
+    key = main_key(spans)
+    if len(spans) > 1:
+        say("転調: " + " → ".join(f"{s.key.name}({s.start:.0f}s)" for s in spans))
+    chords = estimate_chords(chroma, beats, sr, spans)
 
     melody_line: list[tuple[float, float]] = []
     melody_source = "mix"
@@ -720,9 +872,10 @@ def analyze(
         beats=[float(t) for t in beats],
         downbeats=[float(beats[i]) for i in downbeat_idx if i < len(beats)],
         key=key,
+        keys=spans,
         chords=chords,
         melody=melody_line,
-        duration=len(y) / sr,
+        duration=duration,
         melody_source=melody_source,
         instrumental=str(instrumental) if instrumental else None,
     )

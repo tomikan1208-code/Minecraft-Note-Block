@@ -119,7 +119,11 @@ def test_key(analysed):
 
 
 def test_chords(analysed):
-    """コードを時間の 7 割以上で当てる。"""
+    """コードを時間の 9 割近くで当てる。
+
+    残りはほぼコードの変わり目の 1 拍ぶんで、拍単位で推定している以上の
+    分解能は出ない。
+    """
     chords = analysed["chords"]
     step = 0.05
     hit = total = 0
@@ -130,7 +134,7 @@ def test_chords(analysed):
             if got and got.root == root and got.quality == quality:
                 hit += 1
     ratio = hit / max(total, 1)
-    assert ratio >= 0.80, f"一致 {ratio:.0%}（{hit}/{total}）"
+    assert ratio >= 0.88, f"一致 {ratio:.0%}（{hit}/{total}）"
 
 
 def test_chord_tones_even_when_quality_differs(analysed):
@@ -149,7 +153,7 @@ def test_chord_tones_even_when_quality_differs(analysed):
                 overlap = len(truth & set(got.pitch_classes)) / len(truth)
                 hit += overlap
     ratio = hit / max(total, 1)
-    assert ratio >= 0.85, f"構成音の一致 {ratio:.0%}"
+    assert ratio >= 0.92, f"構成音の一致 {ratio:.0%}"
 
 
 def test_melody(analysed):
@@ -303,3 +307,116 @@ def test_high_bias_causes_octave_errors_on_a_monophonic_source():
     without = octave_error(M.MELODY_HIGH_BIAS_MONO)
     assert without < with_bias, f"下駄あり {with_bias:.0%} / なし {without:.0%} — 差が出ていない"
     assert without <= 0.15, f"下駄なしでも {without:.0%} 外している"
+
+
+# --------------------------------------------------------------------------- #
+# 平行調 — 構成音が同じなので、留まっている先で決めるしかない
+# --------------------------------------------------------------------------- #
+
+#: D マイナーだが、使う音は F メジャーとまったく同じ進行。
+#: 統計では決まらない。Dm に留まっている時間が長いことだけが手がかり。
+RELATIVE_PROGRESSION = [
+    (2, "m"), (2, "m"), (10, ""), (5, ""),   # Dm Dm B♭ F
+    (2, "m"), (2, "m"), (0, ""), (2, "m"),   # Dm Dm C  Dm
+]
+RELATIVE_MELODY = [
+    [74, 72, 70, 69], [69, 70, 72, 74], [70, 69, 65, 62], [65, 69, 72, 69],
+    [74, 72, 70, 69], [69, 72, 74, 77], [72, 76, 79, 76], [74, 69, 65, 62],
+]
+
+
+def _synth_progression(progression, melody_bars):
+    """任意の進行で音を作る。"""
+    total = int(len(progression) * 4 * BEAT * SR) + SR
+    audio = np.zeros(total, dtype=np.float32)
+    for bar, (root, quality) in enumerate(progression):
+        intervals = M.CHORD_TEMPLATES[quality][0]
+        for beat in range(4):
+            at = int((bar * 4 * BEAT + beat * BEAT) * SR)
+            length = int(BEAT * SR)
+            for interval in intervals:
+                audio[at:at + length] += 0.20 * _voice(48 + (root + interval) % 12, length, (1.0, 0.4, 0.2))
+            audio[at:at + length] += 0.25 * _voice(36 + root, length, (1.0, 0.5, 0.25))
+            note = melody_bars[bar % len(melody_bars)][beat]
+            audio[at:at + length] += 0.55 * _voice(note, length, (1.0, 0.5, 0.3, 0.15))
+    audio += np.random.default_rng(2).normal(0, 0.002, total).astype(np.float32)
+    return audio / np.max(np.abs(audio)) * 0.9
+
+
+def _key_of(audio):
+    import librosa
+
+    _, beat_frames = M.track_beats(audio, SR)
+    beats = librosa.frames_to_time(beat_frames, sr=SR, hop_length=M.HOP)
+    chroma = M.chord_chroma(M.separate_harmonic(audio), SR)
+    key = M.estimate_key(chroma)
+    chords = M.estimate_chords(chroma, beats, SR, key)
+    return M.estimate_key(chroma, chords), chords
+
+
+def test_relative_keys_are_decided_by_where_the_music_rests():
+    """構成音が同じ平行調でも、D マイナーだと分かること。
+
+    Dm・B♭・F・C は F メジャー（vi→IV→I→V）とも読める。
+    """
+    audio = _synth_progression(RELATIVE_PROGRESSION, RELATIVE_MELODY)
+    key, _ = _key_of(audio)
+    assert (key.tonic, key.minor) == (2, True), f"{key.name} と判定された"
+
+
+# --------------------------------------------------------------------------- #
+# 転調
+# --------------------------------------------------------------------------- #
+
+#: 前半 D マイナー、後半 F マイナー（短3度上）。よくある転調。
+MODULATING_PROGRESSION = [
+    (2, "m"), (7, "m"), (9, ""), (2, "m"),
+    (2, "m"), (7, "m"), (9, ""), (2, "m"),
+    (5, "m"), (10, "m"), (0, ""), (5, "m"),
+    (5, "m"), (10, "m"), (0, ""), (5, "m"),
+]
+MODULATING_MELODY = (
+    [[74, 72, 70, 69], [70, 69, 67, 65], [69, 73, 76, 73], [74, 72, 69, 74]] * 2
+    + [[77, 75, 73, 72], [73, 72, 70, 68], [72, 76, 79, 76], [77, 75, 72, 77]] * 2
+)
+
+
+def _keys_of(audio):
+    import librosa
+
+    _, beat_frames = M.track_beats(audio, SR)
+    beats = librosa.frames_to_time(beat_frames, sr=SR, hop_length=M.HOP)
+    chroma = M.chord_chroma(M.separate_harmonic(audio), SR)
+    chords = M.estimate_chords(chroma, beats, SR, M.estimate_key(chroma))
+    return M.estimate_keys(chroma, SR, chords, len(audio) / SR)
+
+
+def test_modulation_is_tracked():
+    """曲の途中で転調したら、そこで調が変わること。
+
+    曲全体で 1 つの調と決めつけると、転調する曲では**どこかが必ず外れる**。
+    調はコード推定の下駄にしか使っていないので、外れた調の下駄は
+    そのままコードの誤りになる。
+    """
+    audio = _synth_progression(MODULATING_PROGRESSION, MODULATING_MELODY)
+    spans = _keys_of(audio)
+    names = [s.key.name for s in spans]
+    assert len(spans) >= 2, f"転調を見つけられていない: {names}"
+
+    half = len(audio) / SR / 2
+    first = next(s.key for s in spans if s.start <= half * 0.4 < s.end)
+    second = next(s.key for s in spans if s.start <= half * 1.6 < s.end)
+    assert (first.tonic, first.minor) == (2, True), f"前半が {first.name}"
+    assert (second.tonic, second.minor) == (5, True), f"後半が {second.name}"
+
+
+def test_a_single_key_piece_is_not_split():
+    """転調していない曲を、勝手に転調したことにしないこと。
+
+    追従を速くしすぎると、部分的なコードの揺れまで転調と読んでしまう。
+    """
+    audio, _, _ = synth()
+    spans = _keys_of(audio)
+    names = [s.key.name for s in spans]
+    assert len(spans) == 1, f"転調していないのに分かれた: {names}"
+    assert (spans[0].key.tonic, spans[0].key.minor) == (2, True), f"{names}"
