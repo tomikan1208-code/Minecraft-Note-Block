@@ -140,7 +140,18 @@ def build_one(
     suffix = "" if source == "mix" else f"_{source}"
     nbs_path = out / f"{name}{suffix}.nbs"
 
-    if src.suffix.lower() == ".nbs":
+    if src.suffix.lower() in SCORE_SUFFIXES:
+        # 楽譜はそのまま置く。採譜を通さないので、音を足しも引きもしない
+        from . import score as score_mod
+
+        if verbose:
+            print("\n■ 楽譜をそのまま音符ブロックへ")
+        sheet = score_mod.read_score(src)
+        if verbose:
+            print(score_mod.summary_or_empty(sheet))
+        tune = score_mod.to_song(sheet, name=name)
+        nbs_path = out / f"{name}.nbs"
+    elif src.suffix.lower() == ".nbs":
         if nbs_path.resolve() != src.resolve():
             shutil.copy2(src, nbs_path)
     elif src.suffix.lower() in HYPERCHORON_INPUTS:
@@ -158,7 +169,8 @@ def build_one(
     else:
         raise ValueError(f"未対応の拡張子: {src.suffix}")
 
-    tune = song.load_nbs(nbs_path, name=name)
+    if src.suffix.lower() not in SCORE_SUFFIXES:
+        tune = song.load_nbs(nbs_path, name=name)
     if verbose:
         print("\n■ 演奏データ")
         print(song.summarize(tune))
@@ -247,6 +259,8 @@ def _arrange_config(args: argparse.Namespace):
 
 #: 原音として扱う拡張子
 AUDIO_SUFFIXES = {".wav", ".mp3", ".flac", ".m4a", ".ogg", ".opus"}
+#: 楽譜として扱う拡張子。採譜を通さずそのまま置く
+SCORE_SUFFIXES = {".xml", ".musicxml", ".mxl", ".json"}
 
 
 def cmd_build(args: argparse.Namespace) -> int:
