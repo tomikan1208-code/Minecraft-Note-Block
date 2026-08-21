@@ -90,12 +90,24 @@ class BuildResult:
     nbs: Path
 
 
+def _safe_name(title: str) -> str:
+    """曲名をファイル名に使える形にする。"""
+    cleaned = "".join(c if c.isalnum() or c in "ー〜_-" else "_" for c in title.strip())
+    return cleaned.strip("_")[:60] or "score"
+
+
 def resolve_input(source: str, cache: Path = Path("cache/audio")) -> tuple[Path, str | None]:
     """入力が URL なら落としてローカルのパスにする。``(path, タイトル)`` を返す。"""
     from . import fetch as fetch_mod
 
     if not fetch_mod.is_url(source):
         return Path(source), None
+
+    if fetch_mod.is_flat_url(source):
+        print(f"■ flat.io から楽譜を取得: {source}")
+        path, title = fetch_mod.fetch_flat_score(source)
+        print(f"  {title}")
+        return path, _safe_name(title)
 
     print(f"■ URL から取得: {source}")
     media = fetch_mod.fetch(source, cache)
@@ -382,15 +394,22 @@ def cmd_verify(args: argparse.Namespace) -> int:
     """headless サーバで実際に動かして検証する。"""
     from . import verify
 
-    src = Path(args.input)
+    try:
+        src, fetched = resolve_input(args.input)
+    except (ValueError, RuntimeError) as e:
+        print(f"エラー: {e}", file=sys.stderr)
+        return 1
     if not src.is_file():
         print(f"エラー: {src} がありません", file=sys.stderr)
         return 1
+    if args.name is None:
+        args.name = fetched
 
     print(f"■ ビルド: {src}")
     r = build_one(src, Path(args.out), name=args.name, max_polyphony=args.max_polyphony,
                   verbose=False, arrange_config=_arrange_config(args),
-                  refresh=getattr(args, "refresh", False))
+                  refresh=getattr(args, "refresh", False),
+                  blocks_per_note=getattr(args, "blocks_per_note", 1))
     print(f"  {len(r.layout.placements)} 音 / {r.pack.build_parts} 区画 / {r.pack.commands} コマンド")
 
     print("\n■ サーバで検証")

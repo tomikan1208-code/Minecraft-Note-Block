@@ -32,6 +32,63 @@ class FetchError(RuntimeError):
     pass
 
 
+#: flat.io の楽譜置き場
+SCORE_CACHE = Path("cache/scores")
+#: flat.io の URL から楽譜 ID を取り出す
+FLAT_SCORE_RE = re.compile(r"flat\.io/score/([0-9a-f]{24})")
+
+
+def is_flat_url(text: str) -> bool:
+    """flat.io の楽譜ページか。"""
+    return bool(FLAT_SCORE_RE.search(text or ""))
+
+
+def fetch_flat_score(url: str, cache_dir: Path | None = None) -> tuple[Path, str]:
+    """flat.io の楽譜を落として ``(パス, 曲名)`` を返す。
+
+    公開されている楽譜なら、埋め込みプレイヤーが使うのと同じ経路で取れる。
+    ただし **Referer と Origin が要る**（付けないと 402 が返る）。
+    書き出し API（mxl / midi）は有料プランだが、プレイヤー用の JSON は公開。
+    """
+    import urllib.request
+
+    match = FLAT_SCORE_RE.search(url)
+    if not match:
+        raise FetchError(f"flat.io の楽譜 URL ではありません: {url}")
+    score_id = match.group(1)
+
+    cache = Path(cache_dir or SCORE_CACHE)
+    cache.mkdir(parents=True, exist_ok=True)
+    dest = cache / f"flat_{score_id}.json"
+
+    headers = {
+        "Referer": f"https://flat.io/score/{score_id}",
+        "Origin": "https://flat.io",
+        "User-Agent": "Mozilla/5.0",
+    }
+
+    def get(path: str) -> bytes:
+        request = urllib.request.Request(
+            f"https://api.flat.io/v2/{path}", headers=headers
+        )
+        with urllib.request.urlopen(request, timeout=120) as response:
+            return response.read()
+
+    title = score_id
+    try:
+        meta = json.loads(get(f"scores/{score_id}"))
+        title = str(meta.get("title") or score_id)
+    except Exception:  # noqa: BLE001 — 題名が取れなくても本体があれば進む
+        pass
+
+    if not dest.is_file():
+        try:
+            dest.write_bytes(get(f"scores/{score_id}/revisions/last/json"))
+        except Exception as e:  # noqa: BLE001
+            raise FetchError(f"楽譜を取得できません（非公開かもしれません）: {e}") from e
+    return dest, title
+
+
 def is_url(text: str) -> bool:
     return bool(URL_RE.match(text.strip()))
 

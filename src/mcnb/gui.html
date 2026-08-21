@@ -117,10 +117,18 @@ img.plot{width:100%;border:1px solid var(--line);border-radius:5px;margin-bottom
   <!-- ================= 左: 操作 ================= -->
   <section class="pane">
     <h2>入力</h2>
-    <label for="url">YouTube などの URL</label>
-    <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=...">
-    <label for="file">またはファイル（mp3 / wav / mid / nbs）</label>
-    <input type="text" id="file" placeholder="path/to/song.mp3">
+    <label for="url">URL（YouTube の音源 / flat.io の楽譜）</label>
+    <input type="text" id="url" placeholder="https://www.youtube.com/... または https://flat.io/score/...">
+    <p class="hint">flat.io の公開楽譜なら、採譜を通さず<b>譜面のとおりに</b>置ける。真っ黒ナイト・オブ・ナイツの譜面は 14,500 音・MIDI 21〜108 で、採譜（52,352 音・MIDI 48〜78）とは別物。</p>
+    <label for="file">またはファイル（mp3 / wav / mid / nbs / musicxml）</label>
+    <input type="text" id="file" placeholder="path/to/song.mp3 または score.musicxml">
+
+    <label for="blocks">1 音符に使う音符ブロック（楽譜のとき）</label>
+    <select id="blocks">
+      <option value="1">1 個（譜面どおり）</option>
+      <option value="2">2 個（+1オクターブ下）</option>
+      <option value="3" selected>3 個（+上下1オクターブ）</option>
+    </select>
     <label for="testsel">またはテスト曲</label>
     <select id="testsel"><option value="">—</option></select>
 
@@ -264,7 +272,8 @@ function sparkleOpts() {
 }
 
 function buildOpts() {
-  const a = ['--max-polyphony', $('#poly').value,
+  const a = ['--blocks-per-note', $('#blocks').value,
+             '--max-polyphony', $('#poly').value,
              '--concurrent', $('#concurrent').value,
              '--source', $('#source').value,
              '--move', $('#move').value];
@@ -279,7 +288,8 @@ function buildOpts() {
 
 const ACTIONS = {
   build:      () => { const i = inputValue(); return i && {label:`作る: ${i}`, args:['build', i, '--world', $('#world').value.trim() || 'mcnb_song', ...buildOpts()]}; },
-  'build-plain':() => { const i = inputValue(); return i && {label:`編曲なしで作る: ${i}`, args:['build', i, '--world', $('#world').value.trim() || 'mcnb_song', '--max-polyphony', $('#poly').value, '--move', $('#move').value, '--source', $('#source').value, '--no-arrange', ...sparkleOpts()]}; },
+  'build-plain':() => { const i = inputValue(); return i && {label:`編曲なしで作る: ${i}`, args:['build', i, '--world', $('#world').value.trim() || 'mcnb_song', '--max-polyphony', $('#poly').value, '--move', $('#move').value, '--source', $('#source').value, '--blocks-per-note', $('#blocks').value,
+             '--no-arrange', ...sparkleOpts()]}; },
   'build-only':() => { const i = inputValue(); return i && {label:`データパック: ${i}`, args:['build', i, ...buildOpts()]}; },
   analyze:    () => { const i = inputValue(); return i && {label:`解析: ${i}`, args:['analyze', i]}; },
   analyze20:  () => { const i = inputValue(); return i && {label:`解析(20秒): ${i}`, args:['analyze', i, '--duration', '20']}; },
