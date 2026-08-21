@@ -98,13 +98,25 @@ def musical_weight(event: NoteEvent, context: MusicalContext, offset: float = 0.
 # 疑似残響
 # --------------------------------------------------------------------------- #
 
-#: 元の音の何 tick 後に、どれだけの音量で重ねるか。
-#: 音符ブロックにはエフェクトが無いので、残響を作るには**遅らせて小さく鳴らし直す**
-#: しかない。小さい音は layout が遠くへ置くので、距離ぶんの減衰も乗って
-#: それらしくなる。
-REVERB_TAPS = ((3, 0.42), (7, 0.20))
+#: 残響のタップ。(遅れ tick, 音量の倍率)。
+#:
+#: 最初は元の音をそのまま遅らせて鳴らしていたが、**同じ音・同じ楽器の鳴らし直しは
+#: 残響ではなく「叩き直し」に聞こえる**（ボコボコする）。
+#: 数を増やして間隔を詰め、1 個あたりを小さくすると尾が滑らかになる。
+REVERB_TAPS = ((2, 0.34), (5, 0.21), (9, 0.12))
+#: 残響を 1 オクターブ上げる。低い音のまま繰り返すと打点として聞こえるが、
+#: 上げると倍音の残りに聞こえる。実際の残響も高い成分のほうが空間を感じさせる
+REVERB_OCTAVE = 12
+#: 残響に使う楽器。減衰が長く柔らかいものほど尾が繋がる
+#: （chime は 15.9 tick で全楽器中いちばん長い）
+REVERB_VOICES = ("chime", "bell", "flute")
 #: これより小さい音には残響を付けない。付けても埋もれるだけで数だけ増える
 REVERB_MIN_VELOCITY = 0.25
+#: 同じ音が直前これだけの tick 以内に鳴っていたら、残響を付けない。
+#: 採譜は伸ばした音を刻んで出すので、その 1 つ 1 つに残響を付けると
+#: 音数が 4 倍以上になって濁るだけになる（実測で 5833 → 26689 音）。
+#: 残響は**音の立ち上がり**に付くものなので、鳴らし直しには要らない。
+REVERB_ONSET_GAP = 10
 
 
 def reverb(song: Song, config: ArrangeConfig) -> Song:
@@ -112,19 +124,49 @@ def reverb(song: Song, config: ArrangeConfig) -> Song:
 
     音符ブロックの音は 0.5〜16 tick で減衰しきる。原曲にあるホールの響きや
     ピアノのペダルの余韻は、そのままでは再現できない。
+
+    Minecraft 自体にリバーブは無いので、作れるのは 3 つだけ:
+
+    * **遅らせて小さく鳴らす** — 尾を作る
+    * **1 オクターブ上げ、減衰の長い楽器にする** — 打点でなく倍音の残りに聞こえる
+    * **左右に振る** — 音は 3D 定位なので、方向が散ると空間が出る
+
+    小さい音は layout が遠くへ置くので、距離ぶんの減衰と定位も自動で乗る。
     打楽器には付けない（残響というより連打に聞こえる）。
     """
     if not config.reverb:
         return song
 
     added: list[NoteEvent] = []
-    for e in song.events:
+    side = 0
+    last: dict[tuple[str, int], int] = {}
+    for e in sorted(song.events, key=lambda e: e.tick):
+        key = (e.instrument, e.midi)
+        previous = last.get(key)
+        last[key] = e.tick
         if e.instrument in PERCUSSION or e.velocity < REVERB_MIN_VELOCITY:
             continue
+        if previous is not None and e.tick - previous <= REVERB_ONSET_GAP:
+            continue                       # 伸ばした音の刻み。立ち上がりではない
+        target = e.midi + REVERB_OCTAVE
+        voice = next(
+            (n for n in REVERB_VOICES
+             if (i := INSTRUMENTS.get(n)) and i.base_midi <= target <= i.base_midi + 24),
+            None,
+        )
+        if voice is None:
+            target, voice = e.midi, e.instrument      # 上げられなければ元のまま
         for delay, gain in REVERB_TAPS:
             level = e.velocity * gain * config.reverb_gain
-            if level >= 0.02:
-                added.append(replace(e, tick=e.tick + delay, velocity=min(1.0, level)))
+            if level < 0.02:
+                continue
+            # タップごとに左右へ振る。残響は「いろんな方向から遅れて届く音」なので、
+            # 定位を散らすと空間らしくなる。layout は定位を見て壁の左右を決める
+            side += 1
+            added.append(replace(
+                e, tick=e.tick + delay, midi=target, instrument=voice,
+                velocity=min(1.0, level), panning=0.8 if side % 2 else -0.8,
+            ))
 
     config.stats["reverb"] = len(added)
     events = sorted(song.events + added, key=lambda e: (e.tick, -e.velocity))
