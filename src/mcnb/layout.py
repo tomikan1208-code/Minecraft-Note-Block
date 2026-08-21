@@ -6,11 +6,19 @@
     X 軸 = 時間。tick t のノートは平面 x = X0 + t*SPACING に置く。
     プレイヤーは tick t に x = X0 + t*SPACING へテレポートし、常に +X を向く。
 
-平面内の位置で音量と定位が決まる:
+音符ブロックは**通り道の左右の壁**に並べる。真上には置かない::
+
+    ♪♪♪♪♪♪♪♪♪♪♪  |  通り道  |  ♪♪♪♪♪♪♪♪♪♪♪
+      左の壁      （プレイヤー）    右の壁
 
     プレイヤーからの距離 d  → 音量 (gain ≈ 1 − d/48)
-    左右方向のずれ dz      → ステレオ定位（+X を向いていると +Z が右）
-    真上/真下             → 定位は中央のまま距離だけ稼げる
+    左右どちら側か          → ステレオ定位（+X を向いていると +Z が右）
+    壁の高さ（数段）        → 同じ距離のスロットを増やすため
+
+真上に積むほうが定位を中央に保てるが、
+(1) 参考にしている作品が左右に広げている
+(2) 左右のほうが音符ブロックが見える
+ので壁にしている。そのぶん定位はほぼ左右に振り切る。
 
 音符ブロックは「直下が楽器ブロック・真上が空気」でないと鳴らないので、
 縦方向は 3 ブロック周期になる::
@@ -28,7 +36,7 @@ SPACING=2 にしてあるのでこのレーンは常に空いている。
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from math import cos, hypot, pi, sin
+from math import hypot, sqrt
 
 from .instruments import INSTRUMENTS
 from .song import NoteEvent, Song
@@ -41,6 +49,11 @@ MIN_DISTANCE = 2.0
 MAX_DISTANCE = 45.0
 #: 縦方向のスロット周期（楽器 / 音符 / 空気）
 Y_PERIOD = 3
+#: 壁の高さ。音符ブロックを置ける段（プレイヤーの足元からの相対）。
+#: 低く抑えて見やすくする。段を増やすほど同じ距離のスロットが増える
+WALL_ROWS = (1, 4, 7, 10, 13)
+#: 中央寄りの定位をどちら側に振るかの閾値。これ以下なら左右を交互に使う
+CENTER_PAN = 0.15
 #: 時間軸方向の 1 tick あたりのブロック数。
 #:
 #: 発火用のレッドストーンブロックは平面の 1 手前 (x-1) に置く。これは x-2 とも
@@ -135,32 +148,39 @@ class Layout:
 # --------------------------------------------------------------------------- #
 
 
-def _ideal_offset(velocity: float, panning: float) -> tuple[float, float]:
-    """音量と定位から、平面内での理想的な (dy, dz) を出す。
+def target_distance(velocity: float) -> float:
+    """音量から、置きたい距離を出す。"""
+    return max(MIN_DISTANCE, min(MAX_DISTANCE, MAX_HEARING * (1.0 - velocity)))
 
-    音量 → 距離、定位 → 角度。定位が中央なら真上に置く（距離だけ稼ぐ）。
+
+def _wall_dz(row: int, distance: float) -> float:
+    """壁の ``row`` 段目で、耳から ``distance`` になる横方向のずれ。"""
+    vertical = row - EAR_HEIGHT
+    remaining = distance * distance - vertical * vertical
+    return sqrt(remaining) if remaining > 0 else 0.0
+
+
+#: 狙った距離からどれだけ横にずらして探すか。
+#: 壁は平面より格段にスロットが少ないので、広めに探さないと置けない音が出る
+SEARCH_RINGS = 24
+
+
+def _candidates(distance: float, side: int, rings: int = SEARCH_RINGS):
+    """狙った距離に近い順に (dy, dz) を出す。左右は ``side`` で固定する。
+
+    段を下から順に見て、それぞれで狙った距離になる横位置を出す。
+    そこが埋まっていたら少しずつ横へずらす。
     """
-    distance = MAX_HEARING * (1.0 - velocity)
-    distance = max(MIN_DISTANCE, min(MAX_DISTANCE, distance))
-    angle = panning * (pi / 2)
-    return distance * cos(angle), distance * sin(angle)
-
-
-def _snap(dy: float, dz: float) -> tuple[int, int]:
-    """格子に落とす。dy は Y_PERIOD の倍数、dz は整数。"""
-    return int(round(dy / Y_PERIOD)) * Y_PERIOD, int(round(dz))
-
-
-def _spiral(dy: int, dz: int, rings: int = 6):
-    """(dy, dz) の近くから外へ向かって候補を出す。"""
-    yield dy, dz
-    for r in range(1, rings + 1):
-        for ddz in range(-r, r + 1):
-            for ddy in (-r, r):
-                yield dy + ddy * Y_PERIOD, dz + ddz
-        for ddy in range(-r + 1, r):
-            for ddz in (-r, r):
-                yield dy + ddy * Y_PERIOD, dz + ddz
+    for offset in range(rings + 1):
+        for row in WALL_ROWS:
+            dz = _wall_dz(row, distance)
+            if dz <= 0:
+                continue
+            base = int(round(dz))
+            for delta in ((0,) if offset == 0 else (offset, -offset)):
+                z = base + delta
+                if 1 <= z <= MAX_DISTANCE:
+                    yield row, side * z
 
 
 def _ear_distance(dy: int, dz: int) -> float:
@@ -186,7 +206,7 @@ def build_layout(
     origin: tuple[int, int, int] = (0, FLAT_SURFACE_Y, 0),
     spacing: int = SPACING,
     max_polyphony: int = 200,
-    min_dy: int = Y_PERIOD,
+    min_dy: int = min(WALL_ROWS),
 ) -> Layout:
     """Song を直線コリドーに配置する。
 
@@ -194,13 +214,16 @@ def build_layout(
     バニラなら 247、RSLS 導入済みなら 4095 まで上げられるが、
     実際には音が濁るので既定値は控えめにしてある。
 
+    音符ブロックは通り道の左右の壁に並べる（真上には積まない）。
     ``min_dy`` より下には置かない。フラット地形の地面に構造を埋めないため。
-    定位の理想位置は必ず真上寄り（cos ≥ 0）なので、上半分だけでほぼ足りる。
     """
     layout = Layout(song=song, origin=origin, spacing=spacing)
     x0, y0, z0 = origin
 
     by_tick = song.events_by_tick()
+    # 中央寄りの音を振り分けるカウンタ。tick をまたいで持ち回すことで、
+    # 主旋律のように連続する音が片側に寄らないようにする
+    alternate = [0]
 
     for tick in sorted(by_tick):
         notes: list[NoteEvent] = sorted(by_tick[tick], key=lambda e: -e.velocity)
@@ -222,13 +245,17 @@ def build_layout(
                 layout.dropped_unplaceable += 1
                 continue
 
-            target_d = max(MIN_DISTANCE, min(MAX_DISTANCE, MAX_HEARING * (1.0 - note.velocity)))
-            ideal_dy, ideal_dz = _ideal_offset(note.velocity, note.panning)
-            sdy, sdz = _snap(ideal_dy, ideal_dz)
+            target_d = target_distance(note.velocity)
+            # 定位が中央寄りの音は左右を交互に振って、壁の使い方を偏らせない
+            if abs(note.panning) <= CENTER_PAN:
+                side = 1 if (alternate[0] % 2 == 0) else -1
+                alternate[0] += 1
+            else:
+                side = 1 if note.panning > 0 else -1
 
             best: tuple[int, int] | None = None
             best_err = float("inf")
-            for cy, cz in _spiral(sdy, sdz):
+            for cy, cz in _candidates(target_d, side):
                 if (cy, cz) in used:
                     continue
                 err = _placement_error(cy, cz, target_d, note.panning, min_dy)
@@ -236,6 +263,17 @@ def build_layout(
                     best, best_err = (cy, cz), err
                     if err < 0.75:  # 十分近ければ打ち切る
                         break
+
+            # その側が埋まっていたら反対側も試す
+            if best is None or best_err == float("inf"):
+                for cy, cz in _candidates(target_d, -side):
+                    if (cy, cz) in used:
+                        continue
+                    err = _placement_error(cy, cz, target_d, note.panning, min_dy)
+                    if err < best_err:
+                        best, best_err = (cy, cz), err
+                        if err < 0.75:
+                            break
 
             if best is None or best_err == float("inf"):
                 layout.dropped_unplaceable += 1

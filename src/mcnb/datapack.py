@@ -181,7 +181,9 @@ def _panel_commands(x0: int, y0: int, z0: int) -> list[str]:
             f"setblock {px + 1} {y0} {z} minecraft:stone_button[face=floor,facing=east] replace"
         )
 
-    lines.append(f"tp @p {px} {y0} {z0} 90 0")
+    # yaw は 0=南(+Z) / 90=西(-X) / 180=北(-Z) / -90=東(+X)。
+    # ボタンは px+1（東側）にあるので東を向かせる
+    lines.append(f"tp @p {px} {y0} {z0} {YAW_EAST:g} 0")
     lines.append('tellraw @a {"text":"[mcnb] 操作盤: 黄緑=設置 / 水色=演奏 / 赤=停止 / 黄=開始位置へ"}')
     return lines
 
@@ -302,9 +304,12 @@ def emit(layout: Layout, out_dir: Path, name: str | None = None, overwrite: bool
         "stop.mcfunction",
         [
             f"scoreboard players set #playing {NS} 0",
-            "forceload remove all",
+            # 曲が終わったら開始位置へ戻す。1206 ブロック先に置き去りにしない
+            f"tp @a[tag=mcnb_listener] {x0} {y0} {z0} {YAW_EAST:g} 0",
             "tag @a remove mcnb_listener",
-            'tellraw @a {"text":"[mcnb] 停止"}',
+            "forceload remove all",
+            _forceload_span(x0 - 16, bz1 - 1, x0 + 16, bz2 + 1),
+            'tellraw @a {"text":"[mcnb] 演奏終了。開始位置に戻りました"}',
         ],
     )
 
