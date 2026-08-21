@@ -420,3 +420,96 @@ def test_a_single_key_piece_is_not_split():
     names = [s.key.name for s in spans]
     assert len(spans) == 1, f"転調していないのに分かれた: {names}"
     assert (spans[0].key.tonic, spans[0].key.minor) == (2, True), f"{names}"
+
+
+# --------------------------------------------------------------------------- #
+# 拍子
+# --------------------------------------------------------------------------- #
+
+
+def _synth_meter(per_bar: int, bars: int = 12, accent: float = 2.2) -> np.ndarray:
+    """指定した拍子の音を作る。小節頭を強く弾き、コードも小節ごとに変える。
+
+    5拍子・7拍子も同じ作りで出せるので、変拍子の扱いをそのまま試せる。
+    """
+    progression = [(2, "m"), (7, "m"), (9, ""), (2, "m")]
+    length = int(BEAT * SR)
+    audio = np.zeros(length * per_bar * bars + SR, dtype=np.float32)
+    for bar in range(bars):
+        root, quality = progression[bar % len(progression)]
+        for beat in range(per_bar):
+            at = (bar * per_bar + beat) * length
+            gain = accent if beat == 0 else 1.0
+            for interval in M.CHORD_TEMPLATES[quality][0]:
+                audio[at:at + length] += 0.20 * gain * _voice(
+                    48 + (root + interval) % 12, length, (1.0, 0.4, 0.2)
+                )
+            audio[at:at + length] += 0.28 * gain * _voice(36 + root, length, (1.0, 0.5, 0.25))
+            audio[at:at + length] += 0.45 * _voice(
+                62 + (beat * 3) % 12, length, (1.0, 0.5, 0.3, 0.15)
+            )
+    audio += np.random.default_rng(4).normal(0, 0.002, len(audio)).astype(np.float32)
+    return audio / np.max(np.abs(audio)) * 0.9
+
+
+def _meter_of(audio: np.ndarray) -> tuple[int, int]:
+    import librosa
+
+    _, beat_frames = M.track_beats(audio, SR)
+    beats = librosa.frames_to_time(beat_frames, sr=SR, hop_length=M.HOP)
+    chroma = M.chord_chroma(M.separate_harmonic(audio), SR)
+    chords = M.estimate_chords(chroma, beats, SR, M.estimate_key(chroma))
+    onset = librosa.onset.onset_strength(y=audio, sr=SR, hop_length=M.HOP, aggregate=np.median)
+    strength = onset[np.clip(beat_frames, 0, len(onset) - 1)]
+    return M.estimate_meter(strength, beats, chords)
+
+
+@pytest.mark.parametrize("per_bar", [3, 4])
+def test_common_meters(per_bar):
+    """3拍子と4拍子を取り違えないこと。
+
+    小節頭の強さだけで決めると 4拍子は 2拍子でも説明できてしまうので、
+    コードの変わり目の周期を併せて見ている。
+    """
+    got, _ = _meter_of(_synth_meter(per_bar))
+    assert got == per_bar, f"{per_bar}拍子を {got}拍子と判定"
+
+
+@pytest.mark.parametrize("per_bar", [5, 7, 8])
+def test_odd_and_long_meters(per_bar):
+    """変拍子（5拍子・7拍子）と 8拍子も取れること。
+
+    小節ごとに長さが変わる本物の変拍子は別の話。ここで見ているのは
+    「4拍子でない一定の拍子」を 4拍子に押し込めないこと。
+
+    8 が要るのは、拍の推定が8分音符に乗ると 4/4 が 1小節 8拍になるから。
+    候補を 7 で打ち切ると、その曲が 7拍子として溢れる。
+    """
+    got, _ = _meter_of(_synth_meter(per_bar))
+    assert got == per_bar, f"{per_bar}拍子を {got}拍子と判定"
+
+
+def test_metrical_position_is_consistent_with_the_beats():
+    """小節内の位置が、小節頭で 0 に戻ること。"""
+    audio = _synth_meter(4)
+    import librosa
+
+    _, beat_frames = M.track_beats(audio, SR)
+    beats = librosa.frames_to_time(beat_frames, sr=SR, hop_length=M.HOP)
+    downbeats, per_bar = M.find_downbeats(audio, SR, beat_frames)
+    context = M.MusicalContext(
+        tempo=TEMPO,
+        beats=[float(t) for t in beats],
+        downbeats=[float(beats[i]) for i in downbeats if i < len(beats)],
+        beats_per_bar=per_bar,
+        duration=len(audio) / SR,
+    )
+    for at in context.downbeats[1:-1]:
+        position = context.metrical_position(at + 0.001)
+        assert position is not None
+        assert position[1] == pytest.approx(0.0, abs=0.1), f"{at:.2f}s で {position[1]:.2f}拍"
+        assert context.is_downbeat(at + 0.001)
+
+    # 小節のまんなかは小節頭ではない
+    middle = context.downbeats[1] + (context.downbeats[2] - context.downbeats[1]) / 2
+    assert not context.is_downbeat(middle)

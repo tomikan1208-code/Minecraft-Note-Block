@@ -183,6 +183,8 @@ class MusicalContext:
     #: 主旋律。(秒, MIDIノート番号)。鳴っていない区間は入らない
     melody: list[tuple[float, float]] = field(default_factory=list)
     duration: float = 0.0
+    #: 1小節あたりの拍数
+    beats_per_bar: int = 4
     #: 主旋律をどこから取ったか。"vocals"（分離した声）か "mix"（混ざったまま）
     melody_source: str = "mix"
     #: 伴奏だけの音（カラオケ）。分離したときだけ入る
@@ -236,6 +238,37 @@ class MusicalContext:
         """その時刻が何拍目か。拍より前なら -1。"""
         return int(np.searchsorted(self.beats, seconds, side="right")) - 1
 
+    def metrical_position(self, seconds: float) -> tuple[int, float] | None:
+        """その時刻が「何小節目の、小節頭から何拍のところ」かを返す。
+
+        小節内の位置は小数。1.5 なら 2 拍目の裏。編曲でどの音を残すかを
+        決めるとき、**同じ音でも小節のどこにあるかで重みが違う**ので要る。
+        """
+        i = self.beat_index(seconds)
+        if i < 0 or not self.beats:
+            return None
+        if i + 1 < len(self.beats):
+            span = self.beats[i + 1] - self.beats[i]
+        else:
+            span = self.beats[i] - self.beats[i - 1] if len(self.beats) > 1 else 1.0
+        within = (seconds - self.beats[i]) / span if span > 0 else 0.0
+
+        # 小節頭からの通し拍数。downbeats は beats の部分列
+        offset = int(np.searchsorted(self.downbeats, self.beats[i], side="right")) - 1
+        if offset < 0:
+            first = self.beat_index(self.downbeats[0]) if self.downbeats else 0
+            return -1, float((i - first) % self.beats_per_bar) + within
+        head = self.beat_index(self.downbeats[offset])
+        return offset, float(i - head) + within
+
+    def is_downbeat(self, seconds: float, tolerance: float = 0.25) -> bool:
+        """小節頭のあたりか。``tolerance`` は拍を 1 とした割合。"""
+        position = self.metrical_position(seconds)
+        if position is None:
+            return False
+        within = position[1] % self.beats_per_bar
+        return min(within, self.beats_per_bar - within) <= tolerance
+
     def summary(self) -> str:
         uniq: list[str] = []
         for c in self.chords:
@@ -246,7 +279,8 @@ class MusicalContext:
         return "\n".join(
             [
                 f"長さ    : {self.duration:.1f} 秒",
-                f"テンポ  : {self.tempo:.1f} BPM  拍 {len(self.beats)} 個 / 小節頭 {len(self.downbeats)} 個",
+                f"テンポ  : {self.tempo:.1f} BPM  {self.beats_per_bar}拍子  "
+                f"拍 {len(self.beats)} 個 / 小節 {len(self.downbeats)} 個",
                 f"調      : {self.key.name if self.key else '不明'}"
                 + (f"  (確信度 {self.key.confidence:.2f})" if self.key else "")
                 + (
@@ -273,6 +307,7 @@ class MusicalContext:
             "duration": self.duration,
             "beats": self.beats,
             "downbeats": self.downbeats,
+            "beats_per_bar": self.beats_per_bar,
             "key": ({**asdict(self.key), "name": self.key.name} if self.key else None),
             "keys": [
                 {"start": s.start, "end": s.end, **asdict(s.key), "name": s.key.name}
@@ -339,20 +374,70 @@ def track_beats(y: np.ndarray, sr: int) -> tuple[float, np.ndarray]:
     return best[0], best[1]
 
 
-def find_downbeats(y: np.ndarray, sr: int, beat_frames: np.ndarray, per_bar: int = 4) -> list[int]:
-    """小節頭がどの拍かを返す（拍の番号）。
+#: 1小節あたりの拍数の候補。
+#: 8 まで見るのが要る。拍の推定が8分音符に乗ると 4/4 が 1小節 8拍になるので、
+#: 7 で打ち切ると **8拍子の曲が 7拍子として溢れる**（ナイツで実際に起きた）。
+#: 6 と 8 は「拍が8分に乗った 3拍子 / 4拍子」の意味だと思ってよい。
+METER_CANDIDATES = (2, 3, 4, 5, 6, 7, 8)
+#: コードの変わり目が小節頭に乗っているかを、拍の強さに対してどれだけ重く見るか。
+#: 拍の強さだけだと「2拍子」が常に有利になる（4拍子の曲は2拍子でも説明できる）。
+#: コードの変わり目は小節の長さで周期を持つので、そこを分ける決め手になる。
+METER_CHORD_WEIGHT = 1.5
 
-    拍子推定まではやらない。4拍子と仮定して、**どの位相に置くと
-    その拍のオンセットが一番強いか**だけを選ぶ。
+
+def estimate_meter(
+    beat_strength: np.ndarray, beats: np.ndarray, chords: list[Chord] | None
+) -> tuple[int, int]:
+    """1小節あたりの拍数と、小節頭がどの拍から始まるかを返す。
+
+    手がかりは 2 つ。
+
+    * **小節頭は強い** — 拍ごとのオンセットの強さが、小節の長さで周期を持つ
+    * **コードは小節頭で変わる** — 変わり目の位置も同じ周期を持つ
+
+    強さだけだと 2 拍子が常に勝つ（4 拍子の曲は 2 拍子でも説明できてしまう）。
+    そこで**まぐれで当たる分を引く**。周期 P なら、でたらめに置いても
+    1/P は小節頭に当たるので、そこを超えた分だけを点数にする。
     """
+    if len(beat_strength) < max(METER_CANDIDATES) * 2:
+        return 4, 0
+
+    changes: list[int] = []
+    if chords:
+        for chord in chords[1:]:
+            if chord.root < 0:
+                continue
+            changes.append(int(np.argmin(np.abs(beats - chord.start))))
+
+    mean_strength = float(np.mean(beat_strength)) or 1.0
+    best = (4, 0, -1e9)
+    for per_bar in METER_CANDIDATES:
+        for phase in range(per_bar):
+            downbeats = beat_strength[phase::per_bar]
+            if len(downbeats) < 2:
+                continue
+            # 小節頭がどれだけ強いか（1.0 が「他の拍と同じ」）
+            strength = float(np.mean(downbeats)) / mean_strength - 1.0
+            score = strength
+            if changes:
+                on_downbeat = sum(1 for i in changes if i % per_bar == phase) / len(changes)
+                score += METER_CHORD_WEIGHT * (on_downbeat - 1.0 / per_bar)
+            if score > best[2]:
+                best = (per_bar, phase, score)
+    return best[0], best[1]
+
+
+def find_downbeats(
+    y: np.ndarray, sr: int, beat_frames: np.ndarray, chords: list[Chord] | None = None
+) -> tuple[list[int], int]:
+    """小節頭がどの拍かの一覧と、1小節あたりの拍数を返す。"""
     import librosa
 
     onset = librosa.onset.onset_strength(y=y, sr=sr, hop_length=HOP, aggregate=np.median)
     strength = onset[np.clip(beat_frames, 0, len(onset) - 1)]
-    if len(strength) < per_bar:
-        return list(range(len(strength)))
-    phase = max(range(per_bar), key=lambda p: float(np.mean(strength[p::per_bar])))
-    return list(range(phase, len(beat_frames), per_bar))
+    beats = librosa.frames_to_time(beat_frames, sr=sr, hop_length=HOP)
+    per_bar, phase = estimate_meter(strength, beats, chords)
+    return list(range(phase, len(beat_frames), per_bar)), per_bar
 
 
 # --------------------------------------------------------------------------- #
@@ -839,7 +924,6 @@ def analyze(
     say("拍を取っています…")
     tempo, beat_frames = track_beats(y, sr)
     beats = librosa.frames_to_time(beat_frames, sr=sr, hop_length=HOP)
-    downbeat_idx = find_downbeats(y, sr, beat_frames)
 
     say("コードを推定しています…")
     harmonic = separate_harmonic(y)
@@ -854,6 +938,10 @@ def analyze(
     if len(spans) > 1:
         say("転調: " + " → ".join(f"{s.key.name}({s.start:.0f}s)" for s in spans))
     chords = estimate_chords(chroma, beats, sr, spans)
+
+    # 拍子はコードの変わり目を手がかりにするので、コードの後で決める
+    downbeat_idx, beats_per_bar = find_downbeats(y, sr, beat_frames, chords)
+    say(f"{beats_per_bar}拍子とみなします")
 
     melody_line: list[tuple[float, float]] = []
     melody_source = "mix"
@@ -871,6 +959,7 @@ def analyze(
         tempo=tempo,
         beats=[float(t) for t in beats],
         downbeats=[float(beats[i]) for i in downbeat_idx if i < len(beats)],
+        beats_per_bar=beats_per_bar,
         key=key,
         keys=spans,
         chords=chords,
