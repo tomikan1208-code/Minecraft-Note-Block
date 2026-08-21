@@ -36,6 +36,9 @@ transcribe = [
 audio = [
     "yt-dlp>=2026.1.1",            # Unlicense
     "audio-separator[cpu]>=0.44",  # MIT（モデルの重みは別ライセンス）
+    # torch は audio-separator 経由の推移的依存だが、[tool.uv.sources] は
+    # 直接依存にしか効かないのでここに明記して CUDA 版を引かせる
+    "torch>=2.13",
     # setuptools 81+ は pkg_resources を落としたが resampy がまだ要求する
     "setuptools<81",
     # audio-separator 0.44 は audioread を要求するが宣言していない。
@@ -68,6 +71,19 @@ dev = [
 
 [project.scripts]
 mcnb = "mcnb.__main__:main"
+
+# --- GPU (CUDA) ---
+# 音源分離は torch のモデル（.pth/.ckpt/.yaml）が主なので、torch を CUDA 版にすると効く。
+# ONNX モデルは使っていないので onnxruntime は CPU のままでよい（CUDA の版ずれを避ける）。
+# GPU が無い環境ではこの2ブロックを消せば CPU 版に戻る。
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }
 
 [tool.uv]
 # hyperchoron が litemapy>=0.11.0b0（プレリリースのみ）に依存している
