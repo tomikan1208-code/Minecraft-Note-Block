@@ -185,6 +185,8 @@ class MusicalContext:
     duration: float = 0.0
     #: 1小節あたりの拍数
     beats_per_bar: int = 4
+    #: 拍子が曲を通して一定か（窓ごとの一致率）。低ければ変拍子か、決められていない
+    meter_stability: float = 1.0
     #: 主旋律をどこから取ったか。"vocals"（分離した声）か "mix"（混ざったまま）
     melody_source: str = "mix"
     #: 伴奏だけの音（カラオケ）。分離したときだけ入る
@@ -261,8 +263,23 @@ class MusicalContext:
         head = self.beat_index(self.downbeats[offset])
         return offset, float(i - head) + within
 
+    @property
+    def meter_is_reliable(self) -> bool:
+        """小節の位置を当てにしてよいか。
+
+        変拍子や、拍子が決まらない曲では小節頭が定まらない。そのときに
+        「小節頭だから残す」と判断すると、**でたらめな位置の音を優遇する**ことになる。
+        当てにできないなら拍だけで済ませるほうがよい。
+        """
+        return self.meter_stability >= METER_STABLE
+
     def is_downbeat(self, seconds: float, tolerance: float = 0.25) -> bool:
-        """小節頭のあたりか。``tolerance`` は拍を 1 とした割合。"""
+        """小節頭のあたりか。``tolerance`` は拍を 1 とした割合。
+
+        拍子が当てにならない曲では、常に False を返す。
+        """
+        if not self.meter_is_reliable:
+            return False
         position = self.metrical_position(seconds)
         if position is None:
             return False
@@ -279,8 +296,15 @@ class MusicalContext:
         return "\n".join(
             [
                 f"長さ    : {self.duration:.1f} 秒",
-                f"テンポ  : {self.tempo:.1f} BPM  {self.beats_per_bar}拍子  "
-                f"拍 {len(self.beats)} 個 / 小節 {len(self.downbeats)} 個",
+                f"テンポ  : {self.tempo:.1f} BPM  拍 {len(self.beats)} 個",
+                "拍子    : "
+                + (
+                    f"{self.beats_per_bar}拍子  小節 {len(self.downbeats)} 個"
+                    f"  (一致率 {self.meter_stability:.0%})"
+                    if self.meter_is_reliable
+                    else f"一定でない（最頻は {self.beats_per_bar}拍子だが一致率 "
+                    f"{self.meter_stability:.0%}）— 変拍子とみなして小節は使わない"
+                ),
                 f"調      : {self.key.name if self.key else '不明'}"
                 + (f"  (確信度 {self.key.confidence:.2f})" if self.key else "")
                 + (
@@ -308,6 +332,7 @@ class MusicalContext:
             "beats": self.beats,
             "downbeats": self.downbeats,
             "beats_per_bar": self.beats_per_bar,
+            "meter_stability": self.meter_stability,
             "key": ({**asdict(self.key), "name": self.key.name} if self.key else None),
             "keys": [
                 {"start": s.start, "end": s.end, **asdict(s.key), "name": s.key.name}
@@ -383,6 +408,15 @@ METER_CANDIDATES = (2, 3, 4, 5, 6, 7, 8)
 #: 拍の強さだけだと「2拍子」が常に有利になる（4拍子の曲は2拍子でも説明できる）。
 #: コードの変わり目は小節の長さで周期を持つので、そこを分ける決め手になる。
 METER_CHORD_WEIGHT = 1.5
+#: 拍子が曲を通して一定かを確かめる窓の長さ（拍）と、ずらす幅
+METER_WINDOW_BEATS = 48
+METER_WINDOW_HOP = 24
+#: 窓の下限（拍）。estimate_meter は候補の 2 倍の拍数を要るので、それより下げない
+METER_WINDOW_MIN = 16
+#: 窓ごとの拍子がこれだけ揃わなければ、「曲を通してひとつの拍子」という
+#: 前提そのものが成り立っていないとみなす。
+#: 実測: 拍子が一定の合成音 100% / ナイツ 62% / Crazy 65% / 疾駆流金(変拍子) 33%
+METER_STABLE = 0.5
 
 
 def estimate_meter(
@@ -427,17 +461,47 @@ def estimate_meter(
     return best[0], best[1]
 
 
+def meter_stability(
+    beat_strength: np.ndarray, beats: np.ndarray, chords: list[Chord] | None
+) -> float:
+    """拍子が曲を通して一定か。窓ごとに出して、最頻がどれだけ占めるかを返す。
+
+    「拍子が分からない」と「拍子が途中で変わる」は、一箇所だけ見ても区別できない。
+    どちらも同じ答えの出方をする。**窓ごとに出して揃うかどうか**を見れば、
+    曲を通してひとつの拍子という前提が成り立っているかが分かる。
+    """
+    # 短い曲では窓を詰める。窓ひとつ分に満たないからといって
+    # 「一定でない」と答えてはいけない — それは**調べられなかった**であって、
+    # ばらついていることの証拠ではない。
+    window = min(METER_WINDOW_BEATS, max(METER_WINDOW_MIN, len(beat_strength) // 3))
+    hop = max(1, window // 2)
+
+    votes: list[int] = []
+    for start in range(0, max(len(beat_strength) - window, 0) + 1, hop):
+        segment = beat_strength[start : start + window]
+        if len(segment) < window:
+            break
+        span = beats[start : start + window]
+        local = [c for c in (chords or []) if c.end > span[0] and c.start < span[-1]]
+        votes.append(estimate_meter(segment, span, local)[0])
+    if len(votes) < 2:
+        # 比べる相手がいない。ばらつきを示せないので、一定として扱う
+        return 1.0
+    return max(votes.count(v) for v in set(votes)) / len(votes)
+
+
 def find_downbeats(
     y: np.ndarray, sr: int, beat_frames: np.ndarray, chords: list[Chord] | None = None
-) -> tuple[list[int], int]:
-    """小節頭がどの拍かの一覧と、1小節あたりの拍数を返す。"""
+) -> tuple[list[int], int, float]:
+    """小節頭がどの拍かの一覧・1小節あたりの拍数・拍子の確信度を返す。"""
     import librosa
 
     onset = librosa.onset.onset_strength(y=y, sr=sr, hop_length=HOP, aggregate=np.median)
     strength = onset[np.clip(beat_frames, 0, len(onset) - 1)]
     beats = librosa.frames_to_time(beat_frames, sr=sr, hop_length=HOP)
     per_bar, phase = estimate_meter(strength, beats, chords)
-    return list(range(phase, len(beat_frames), per_bar)), per_bar
+    stability = meter_stability(strength, beats, chords)
+    return list(range(phase, len(beat_frames), per_bar)), per_bar, stability
 
 
 # --------------------------------------------------------------------------- #
@@ -940,8 +1004,11 @@ def analyze(
     chords = estimate_chords(chroma, beats, sr, spans)
 
     # 拍子はコードの変わり目を手がかりにするので、コードの後で決める
-    downbeat_idx, beats_per_bar = find_downbeats(y, sr, beat_frames, chords)
-    say(f"{beats_per_bar}拍子とみなします")
+    downbeat_idx, beats_per_bar, stability = find_downbeats(y, sr, beat_frames, chords)
+    if stability >= METER_STABLE:
+        say(f"{beats_per_bar}拍子とみなします（窓ごとの一致率 {stability:.0%}）")
+    else:
+        say(f"拍子が一定でありません（一致率 {stability:.0%}）— 小節は使いません")
 
     melody_line: list[tuple[float, float]] = []
     melody_source = "mix"
@@ -960,6 +1027,7 @@ def analyze(
         beats=[float(t) for t in beats],
         downbeats=[float(beats[i]) for i in downbeat_idx if i < len(beats)],
         beats_per_bar=beats_per_bar,
+        meter_stability=stability,
         key=key,
         keys=spans,
         chords=chords,

@@ -496,12 +496,13 @@ def test_metrical_position_is_consistent_with_the_beats():
 
     _, beat_frames = M.track_beats(audio, SR)
     beats = librosa.frames_to_time(beat_frames, sr=SR, hop_length=M.HOP)
-    downbeats, per_bar = M.find_downbeats(audio, SR, beat_frames)
+    downbeats, per_bar, stability = M.find_downbeats(audio, SR, beat_frames)
     context = M.MusicalContext(
         tempo=TEMPO,
         beats=[float(t) for t in beats],
         downbeats=[float(beats[i]) for i in downbeats if i < len(beats)],
         beats_per_bar=per_bar,
+        meter_stability=stability,
         duration=len(audio) / SR,
     )
     for at in context.downbeats[1:-1]:
@@ -513,3 +514,74 @@ def test_metrical_position_is_consistent_with_the_beats():
     # 小節のまんなかは小節頭ではない
     middle = context.downbeats[1] + (context.downbeats[2] - context.downbeats[1]) / 2
     assert not context.is_downbeat(middle)
+
+
+def _synth_mixed_meter(n_bars: int = 40) -> np.ndarray:
+    """小節ごとに長さが変わる、本物の変拍子。
+
+    最初は 4→3→4→5 の繰り返しで作ったが、それでは**16拍周期の規則的な曲**に
+    なってしまい、窓ごとの推定がぴたりと揃って「一定」と判定された。
+    繰り返しを持たせないよう、小節の長さを毎回選び直す。
+    """
+    rng = np.random.default_rng(6)
+    lengths = [int(rng.choice([3, 4, 5, 7])) for _ in range(n_bars)]
+    progression = [(2, "m"), (7, "m"), (9, ""), (2, "m")]
+    length = int(BEAT * SR)
+    audio = np.zeros(length * sum(lengths) + SR, dtype=np.float32)
+    at_beat = 0
+    for bar_index, per_bar in enumerate(lengths):
+        root, quality = progression[bar_index % len(progression)]
+        for beat in range(per_bar):
+            at = (at_beat + beat) * length
+            gain = 2.2 if beat == 0 else 1.0
+            for interval in M.CHORD_TEMPLATES[quality][0]:
+                audio[at:at + length] += 0.20 * gain * _voice(
+                    48 + (root + interval) % 12, length, (1.0, 0.4, 0.2)
+                )
+            audio[at:at + length] += 0.28 * gain * _voice(36 + root, length, (1.0, 0.5, 0.25))
+            audio[at:at + length] += 0.45 * _voice(
+                62 + (beat * 3) % 12, length, (1.0, 0.5, 0.3, 0.15)
+            )
+        at_beat += per_bar
+    audio += np.random.default_rng(5).normal(0, 0.002, len(audio)).astype(np.float32)
+    return audio / np.max(np.abs(audio)) * 0.9
+
+
+def _stability_of(audio: np.ndarray) -> float:
+    import librosa
+
+    _, beat_frames = M.track_beats(audio, SR)
+    beats = librosa.frames_to_time(beat_frames, sr=SR, hop_length=M.HOP)
+    chroma = M.chord_chroma(M.separate_harmonic(audio), SR)
+    chords = M.estimate_chords(chroma, beats, SR, M.estimate_key(chroma))
+    onset = librosa.onset.onset_strength(y=audio, sr=SR, hop_length=M.HOP, aggregate=np.median)
+    strength = onset[np.clip(beat_frames, 0, len(onset) - 1)]
+    return M.meter_stability(strength, beats, chords)
+
+
+def test_mixed_meter_is_reported_as_unstable():
+    """小節ごとに長さが変わる曲を、ひとつの拍子だと言い張らないこと。
+
+    「拍子が分からない」と「拍子が途中で変わる」は一箇所だけ見ても区別できない。
+    窓ごとに出して揃うかどうかで分かる。ここで自信ありげに答えてしまうと、
+    編曲が**でたらめな位置を小節頭として優遇する**ことになる。
+    """
+    steady = _stability_of(_synth_meter(4, bars=24))
+    mixed = _stability_of(_synth_mixed_meter())
+    assert steady > mixed, f"一定 {steady:.0%} / 変拍子 {mixed:.0%} — 差が出ていない"
+    assert mixed < M.METER_STABLE, f"変拍子なのに一致率 {mixed:.0%}"
+
+
+def test_downbeats_are_not_claimed_when_the_meter_is_unreliable():
+    """拍子が当てにならないときは、小節頭を主張しないこと。"""
+    context = M.MusicalContext(
+        tempo=120.0, beats=[i * 0.5 for i in range(64)],
+        downbeats=[i * 2.0 for i in range(16)], beats_per_bar=4,
+        meter_stability=0.2, duration=32.0,
+    )
+    assert not context.meter_is_reliable
+    assert not context.is_downbeat(2.0), "当てにならない拍子で小節頭を主張している"
+
+    context.meter_stability = 0.9
+    assert context.meter_is_reliable
+    assert context.is_downbeat(2.0)
