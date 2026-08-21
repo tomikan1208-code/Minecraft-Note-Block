@@ -264,6 +264,45 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
+def cmd_render(args: argparse.Namespace) -> int:
+    """配置を音にする。Minecraft を起動せずに「こう聞こえるはず」を作る。"""
+    from . import render
+
+    try:
+        src, _ = resolve_input(args.input)
+        r = build_one(src, Path(args.out), name=args.name,
+                      max_polyphony=args.max_polyphony, verbose=False)
+
+        model = render.AcousticModel(polyphony=args.polyphony)
+        if args.measurements and Path(args.measurements).is_file():
+            model = render.AcousticModel.from_measurements(Path(args.measurements))
+            model.polyphony = args.polyphony
+            print(f"■ 実測から較正: {args.measurements}")
+            print(f"  減衰カーブ {model.curve} / 可聴距離 {model.max_hearing:g} ブロック")
+        else:
+            print("■ 音響モデル: 未較正（線形 1 − d/48 と仮定）")
+            print("  `mcnb measure` を回すと実測で置き換わります")
+
+        print(f"\n■ 合成中… {len(r.layout.placements)} 音")
+        result = render.render_layout(r.layout, model=model)
+        wav = render.save(result, Path(r.pack.path).parent / f"{r.name}_minecraft.wav")
+        print(render.summary_indent(result))
+        print(f"\n  {wav}")
+
+        if args.compare and src.suffix.lower() in {".wav", ".mp3", ".flac", ".m4a", ".ogg"}:
+            print("\n■ 原曲との距離")
+            print(render.format_compare(render.compare(src, wav)))
+
+        if args.plot:
+            png = render.plot_compare(wav, src if src.suffix.lower() in {'.wav', '.mp3', '.flac', '.m4a'} else None,
+                                      Path(r.pack.path).parent / f"{r.name}_spectrogram.png")
+            print(f"  {png}")
+    except (render.RenderError, ValueError, RuntimeError) as e:
+        print(f"エラー: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_gui(args: argparse.Namespace) -> int:
     """1画面から全部やる GUI を立てる。"""
     from . import gui
@@ -370,6 +409,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--memory", default="2G")
     p.set_defaults(func=cmd_world)
+
+    p = sub.add_parser("render", help="配置を音にする（Minecraft 不要）")
+    p.add_argument("input")
+    p.add_argument("--name", default=None)
+    p.add_argument("--out", default="out")
+    p.add_argument("--max-polyphony", type=int, default=200, help="配置時の同時発音上限")
+    p.add_argument("--polyphony", type=int, default=247, help="再生時の上限（バニラ247 / RSLS4095）")
+    p.add_argument("--measurements", default="out/measure/measurements.json",
+                   help="実測から音響モデルを較正する")
+    p.add_argument("--plot", action="store_true", help="スペクトログラムを並べた図も出す")
+    p.add_argument("--compare", action="store_true", help="原曲との距離を数値で出す（入力が音源のとき）")
+    p.set_defaults(func=cmd_render)
 
     p = sub.add_parser("gui", help="1画面から全部やる GUI（ブラウザ）")
     p.add_argument("--host", default="127.0.0.1")
