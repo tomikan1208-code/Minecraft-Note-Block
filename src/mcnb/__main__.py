@@ -131,6 +131,7 @@ def build_one(
     refresh: bool = False,
     source: str = "mix",
     blocks_per_note: int = 1,
+    transcriber: str = "hyperchoron",
 ) -> BuildResult:
     """1つの入力を最後まで通す。CLI からもテストランナーからも使う。"""
     name = name or src.stem
@@ -167,6 +168,21 @@ def build_one(
     elif src.suffix.lower() == ".nbs":
         if nbs_path.resolve() != src.resolve():
             shutil.copy2(src, nbs_path)
+    elif transcriber in ("basic-pitch", "piano") and src.suffix.lower() in AUDIO_SUFFIXES:
+        # 音符に起こしてから置く。CQT のピーク拾いと違い、1 音ずつに意味がある
+        from . import transcribe as transcribe_mod
+
+        if verbose:
+            print(f"\n■ 音符に起こす（{transcriber}）")
+        notes = (
+            transcribe_mod.transcribe_piano(src, verbose=verbose)
+            if transcriber == "piano"
+            else transcribe_mod.transcribe(src, verbose=verbose)
+        )
+        if verbose:
+            print(transcribe_mod.summarize(notes))
+        tune = transcribe_mod.to_song(notes, name=name, blocks_per_note=blocks_per_note)
+        nbs_path = out / f"{name}.nbs"
     elif src.suffix.lower() in HYPERCHORON_INPUTS:
         # 採譜は曲によっては 1 時間を超える。編曲だけ試したいときに毎回やり直すのは
         # 無駄なので、原音より新しい採譜結果が残っていればそれを使う。
@@ -182,7 +198,7 @@ def build_one(
     else:
         raise ValueError(f"未対応の拡張子: {src.suffix}")
 
-    if src.suffix.lower() not in SCORE_SUFFIXES:
+    if src.suffix.lower() not in SCORE_SUFFIXES and transcriber == "hyperchoron":
         tune = song.load_nbs(nbs_path, name=name)
     if verbose:
         print("\n■ 演奏データ")
@@ -306,6 +322,7 @@ def cmd_build(args: argparse.Namespace) -> int:
             refresh=getattr(args, "refresh", False),
             source=getattr(args, "source", "mix"),
             blocks_per_note=getattr(args, "blocks_per_note", 1),
+            transcriber=getattr(args, "transcriber", "hyperchoron"),
         )
     except (ValueError, RuntimeError) as e:
         print(f"エラー: {e}", file=sys.stderr)
@@ -409,7 +426,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
     r = build_one(src, Path(args.out), name=args.name, max_polyphony=args.max_polyphony,
                   verbose=False, arrange_config=_arrange_config(args),
                   refresh=getattr(args, "refresh", False),
-                  blocks_per_note=getattr(args, "blocks_per_note", 1))
+                  blocks_per_note=getattr(args, "blocks_per_note", 1),
+                  transcriber=getattr(args, "transcriber", "hyperchoron"))
     print(f"  {len(r.layout.placements)} 音 / {r.pack.build_parts} 区画 / {r.pack.commands} コマンド")
 
     print("\n■ サーバで検証")
@@ -435,7 +453,8 @@ def cmd_render(args: argparse.Namespace) -> int:
                       max_polyphony=args.max_polyphony, verbose=False,
                       arrange_config=_arrange_config(args),
                       refresh=getattr(args, "refresh", False),
-                      blocks_per_note=getattr(args, "blocks_per_note", 1))
+                      blocks_per_note=getattr(args, "blocks_per_note", 1),
+                      transcriber=getattr(args, "transcriber", "hyperchoron"))
 
         model = render.AcousticModel(polyphony=args.polyphony)
         if args.measurements and Path(args.measurements).is_file():
@@ -632,6 +651,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--refresh", action="store_true", help="採譜をやり直す")
     p.add_argument("--blocks-per-note", type=int, default=1, choices=(1, 2, 3),
                    help="楽譜入力のとき、1 音符に使う音符ブロックの数（2 以上でオクターブを重ねる）")
+    p.add_argument("--transcriber", choices=("hyperchoron", "basic-pitch", "piano"),
+                   default="hyperchoron",
+                   help="音源の採譜のしかた。hyperchoron=CQTのピーク拾い（密）/ "
+                        "basic-pitch=音符に起こす（譜面に近い）/ "
+                        "piano=ピアノ専用（いちばん正確だがピアノ曲のみ）")
     p.set_defaults(func=cmd_build)
 
     p = sub.add_parser("info", help="NBS の中身を表示")
@@ -693,6 +717,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--refresh", action="store_true", help="採譜をやり直す")
     p.add_argument("--blocks-per-note", type=int, default=1, choices=(1, 2, 3),
                    help="楽譜入力のとき、1 音符に使う音符ブロックの数（2 以上でオクターブを重ねる）")
+    p.add_argument("--transcriber", choices=("hyperchoron", "basic-pitch", "piano"),
+                   default="hyperchoron",
+                   help="音源の採譜のしかた。hyperchoron=CQTのピーク拾い（密）/ "
+                        "basic-pitch=音符に起こす（譜面に近い）/ "
+                        "piano=ピアノ専用（いちばん正確だがピアノ曲のみ）")
     p.set_defaults(func=cmd_render)
 
     p = sub.add_parser("analyze", help="原音から拍・調・コード進行・主旋律を取り出す")
@@ -758,6 +787,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--memory", default="2G")
     p.add_argument("--blocks-per-note", type=int, default=1, choices=(1, 2, 3),
                    help="楽譜入力のとき、1 音符に使う音符ブロックの数（2 以上でオクターブを重ねる）")
+    p.add_argument("--transcriber", choices=("hyperchoron", "basic-pitch", "piano"),
+                   default="hyperchoron",
+                   help="音源の採譜のしかた。hyperchoron=CQTのピーク拾い（密）/ "
+                        "basic-pitch=音符に起こす（譜面に近い）/ "
+                        "piano=ピアノ専用（いちばん正確だがピアノ曲のみ）")
     p.set_defaults(func=cmd_verify)
 
     p = sub.add_parser("setup", help="音源抽出 + Fabric + 軽量化 Mod")

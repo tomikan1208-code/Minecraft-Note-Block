@@ -27,10 +27,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# 音源分離・採譜。重いので既定では入れない
+# 音符に起こす採譜（AMT）。重いので既定では入れない。
+#
+# basic-pitch はここに入れない。tensorflow<2.15.1 を要求し、tensorflow は
+# Python 3.13 用のホイールを出していないので、解決そのものが失敗する。
+# 別プロセスの Python 3.11 で `uv run --no-project --with basic-pitch` として
+# 動かす（src/mcnb/transcribe.py）。
 transcribe = [
-    "audio-separator[gpu]>=0.44",  # MIT（モデル重みは別ライセンス）
-    "basic-pitch>=0.4.0",          # Apache-2.0
+    # ByteDance の高分解能ピアノ採譜。ピアノ専用だが 3.13 でそのまま動く。
+    # 譜面つきの曲での実測で、譜面の音の 98% を再現した（Basic Pitch は 93%）
+    "piano_transcription_inference>=0.0.5",   # MIT（重みは Zenodo から別途）
 ]
 # 音声入力: YouTube などの URL から音源を取る + 音源分離・採譜
 audio = [

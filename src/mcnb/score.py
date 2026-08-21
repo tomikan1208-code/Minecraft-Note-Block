@@ -262,6 +262,37 @@ LAYER_OFFSETS = (0, -12, +12)
 LAYER_GAINS = (1.0, 0.55, 0.40)
 
 
+def layered_events(
+    items: list[tuple[int, int, float, float]], blocks_per_note: int = 1
+) -> list[NoteEvent]:
+    """``(tick, midi, 音量, 定位)`` の並びを、重ねかたに従って音符ブロックにする。
+
+    楽譜から置くときも、採譜した音符から置くときも、ここを通す。
+    **音符は増やさない。** 増えるのは 1 音符に使うブロックの数だけ。
+    """
+    layers = max(1, min(blocks_per_note, len(LAYER_OFFSETS)))
+    events: list[NoteEvent] = []
+    seen: set[tuple[int, int]] = set()
+
+    for tick, midi, velocity, panning in items:
+        for offset, gain in zip(LAYER_OFFSETS[:layers], LAYER_GAINS[:layers], strict=True):
+            spot = place(midi + offset)
+            if spot is None:
+                continue
+            voice, target = spot
+            if (tick, target) in seen:
+                continue          # 折り返しで既にある高さと重なった
+            seen.add((tick, target))
+            events.append(NoteEvent(
+                tick=tick, instrument=voice, midi=target,
+                velocity=max(0.02, min(1.0, velocity * gain)),
+                panning=panning if offset else panning * 0.5,
+            ))
+
+    events.sort(key=lambda e: (e.tick, e.midi))
+    return events
+
+
 def to_song(
     score: Score,
     name: str = "score",
