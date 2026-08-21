@@ -95,6 +95,43 @@ def musical_weight(event: NoteEvent, context: MusicalContext, offset: float = 0.
 
 
 # --------------------------------------------------------------------------- #
+# 疑似残響
+# --------------------------------------------------------------------------- #
+
+#: 元の音の何 tick 後に、どれだけの音量で重ねるか。
+#: 音符ブロックにはエフェクトが無いので、残響を作るには**遅らせて小さく鳴らし直す**
+#: しかない。小さい音は layout が遠くへ置くので、距離ぶんの減衰も乗って
+#: それらしくなる。
+REVERB_TAPS = ((3, 0.42), (7, 0.20))
+#: これより小さい音には残響を付けない。付けても埋もれるだけで数だけ増える
+REVERB_MIN_VELOCITY = 0.25
+
+
+def reverb(song: Song, config: ArrangeConfig) -> Song:
+    """遅らせて小さく鳴らし直し、余韻を作る。
+
+    音符ブロックの音は 0.5〜16 tick で減衰しきる。原曲にあるホールの響きや
+    ピアノのペダルの余韻は、そのままでは再現できない。
+    打楽器には付けない（残響というより連打に聞こえる）。
+    """
+    if not config.reverb:
+        return song
+
+    added: list[NoteEvent] = []
+    for e in song.events:
+        if e.instrument in PERCUSSION or e.velocity < REVERB_MIN_VELOCITY:
+            continue
+        for delay, gain in REVERB_TAPS:
+            level = e.velocity * gain * config.reverb_gain
+            if level >= 0.02:
+                added.append(replace(e, tick=e.tick + delay, velocity=min(1.0, level)))
+
+    config.stats["reverb"] = len(added)
+    events = sorted(song.events + added, key=lambda e: (e.tick, -e.velocity))
+    return Song(name=song.name, events=events, source=song.source)
+
+
+# --------------------------------------------------------------------------- #
 # 上に重ねて明るくする
 # --------------------------------------------------------------------------- #
 
@@ -408,6 +445,11 @@ class ArrangeConfig:
     #: 音数ではなく**重なりの数**で決まることが実測で分かったので、こちらを制御する。
     max_concurrent: int = 0
 
+    #: 遅らせて小さく鳴らし直し、余韻を作る
+    reverb: bool = False
+    #: 残響の強さ（倍率）
+    reverb_gain: float = 1.0
+
     #: 最上声部の 1 オクターブ上を明るい楽器で重ねる
     sparkle: bool = False
     #: 上から何声を重ねるか
@@ -677,8 +719,11 @@ def cap_concurrent(song: Song, config: ArrangeConfig) -> Song:
 
 #: 掛ける順番。倍音を落としてから重複を消し、最後に密度を切る
 PIPELINE = [
+    # 残響は最後に足したいが、上限の計算に入れたいので前に置く。
+    # ただし重ねより後（重ねた音にも残響を付ける）
     # 重ねるのは最初。あとの間引きや上限は、重ねたぶんも含めて数えてほしい
     ("sparkle", sparkle, "sparkle"),
+    ("reverb", reverb, "reverb"),
     # 格子への割り付けが最初。ここで tick が動くので、あとの処理は
     # 動いたあとの位置で数えないと辻褄が合わない
     ("quantize", quantize, "quantize"),

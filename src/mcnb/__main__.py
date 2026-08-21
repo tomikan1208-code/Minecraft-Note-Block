@@ -220,18 +220,21 @@ def _arrange_config(args: argparse.Namespace):
 
     sparkle = getattr(args, "sparkle", False)
     if getattr(args, "no_arrange", False):
-        if not sparkle:
+        if not sparkle and not getattr(args, "reverb", False):
             return None
         # 「編曲なし」でも重ねだけは掛けたい。音を消さないので、
         # 間引きの良し悪しとは独立に効く
         return arrange_mod.ArrangeConfig(
-            sparkle=True, quantize=False, voice_roles=False, emphasize_melody=False,
+            sparkle=sparkle, reverb=getattr(args, "reverb", False),
+            reverb_gain=getattr(args, "reverb_gain", 1.0), quantize=False, voice_roles=False, emphasize_melody=False,
             fold_harmonics=False, dedupe=False, thin_sustains=False, max_concurrent=0,
             sparkle_voices=getattr(args, "sparkle_voices", 1),
             sparkle_gain=getattr(args, "sparkle_gain", arrange_mod.SPARKLE_GAIN),
         )
     return arrange_mod.ArrangeConfig(
         sparkle=sparkle,
+        reverb=getattr(args, "reverb", False),
+        reverb_gain=getattr(args, "reverb_gain", 1.0),
         sparkle_voices=getattr(args, "sparkle_voices", 1),
         sparkle_gain=getattr(args, "sparkle_gain", arrange_mod.SPARKLE_GAIN),
         max_concurrent=getattr(args, "concurrent", DEFAULT_CONCURRENT),
@@ -559,6 +562,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-arrange", action="store_true", help="編曲を一切掛けない（採譜そのまま）")
     p.add_argument("--sparkle", action="store_true",
                    help="最上声部の1オクターブ上を明るい楽器(chime/bell)で重ねる。音は消さない")
+    p.add_argument("--reverb", action="store_true",
+                   help="遅らせて小さく鳴らし直し、余韻を作る（音符ブロックにエフェクトは無い）")
+    p.add_argument("--reverb-gain", type=float, default=1.0, metavar="G",
+                   help="残響の強さ（既定 1.0）")
     p.add_argument("--sparkle-voices", type=int, default=1, metavar="N",
                    help="上から N 声を重ねる（既定 1）")
     p.add_argument("--sparkle-gain", type=float, default=0.55, metavar="G",
@@ -609,6 +616,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-arrange", action="store_true", help="編曲を一切掛けない（採譜そのまま）")
     p.add_argument("--sparkle", action="store_true",
                    help="最上声部の1オクターブ上を明るい楽器(chime/bell)で重ねる。音は消さない")
+    p.add_argument("--reverb", action="store_true",
+                   help="遅らせて小さく鳴らし直し、余韻を作る（音符ブロックにエフェクトは無い）")
+    p.add_argument("--reverb-gain", type=float, default=1.0, metavar="G",
+                   help="残響の強さ（既定 1.0）")
     p.add_argument("--sparkle-voices", type=int, default=1, metavar="N",
                    help="上から N 声を重ねる（既定 1）")
     p.add_argument("--sparkle-gain", type=float, default=0.55, metavar="G",
@@ -668,6 +679,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-arrange", action="store_true", help="編曲を一切掛けない（採譜そのまま）")
     p.add_argument("--sparkle", action="store_true",
                    help="最上声部の1オクターブ上を明るい楽器(chime/bell)で重ねる。音は消さない")
+    p.add_argument("--reverb", action="store_true",
+                   help="遅らせて小さく鳴らし直し、余韻を作る（音符ブロックにエフェクトは無い）")
+    p.add_argument("--reverb-gain", type=float, default=1.0, metavar="G",
+                   help="残響の強さ（既定 1.0）")
     p.add_argument("--sparkle-voices", type=int, default=1, metavar="N",
                    help="上から N 声を重ねる（既定 1）")
     p.add_argument("--sparkle-gain", type=float, default=0.55, metavar="G",
