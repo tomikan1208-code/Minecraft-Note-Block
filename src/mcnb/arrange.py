@@ -11,12 +11,100 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING
 
 from .instruments import INSTRUMENTS
-from .song import NoteEvent, Song
+from .song import TICKS_PER_SECOND, NoteEvent, Song
+
+if TYPE_CHECKING:
+    from .musical import MusicalContext
 
 #: 鳴らし直しの下限。これより短い間隔で同じ音を重ねても濁るだけ
 MIN_RETRIGGER = 2
+
+# --------------------------------------------------------------------------- #
+# 音楽的な重み — どの音を残すか
+# --------------------------------------------------------------------------- #
+
+#: 主旋律に乗っている音。**小さくても必ず残す**。旋律が消えたら曲ではなくなる。
+#:
+#: 値は当てずっぽうではなく、他が覆せない大きさとして決めてある。
+#: 主旋律でない音の重みは、最大でも
+#: 音量 1.0 + オクターブ重ね 0.45 + 根音 0.50 + 低音 0.30 + 小節頭 0.25 = 2.50。
+#: これを超える値にすれば「主旋律は必ず伴奏より先に残る」が保証される。
+#: 実際、1.0 にしていたときは大きい低音（2.40）に負けて旋律が 16 音中 7 音消えた。
+WEIGHT_MELODY = 2.60
+#: 主旋律のオクターブ違い（重ねて厚みを出している声部）
+WEIGHT_MELODY_OCTAVE = 0.45
+#: コードの構成音。根音と第3音が和音の性格を決める。第5音は省いても和音は壊れない
+WEIGHT_CHORD = {0: 0.50, 1: 0.40, 2: 0.12, 3: 0.22}
+#: コード外の音。採譜の誤り（倍音・雑音）である可能性が高いので不利にする。
+#: ただし経過音や刺繍音も含まれるので、落とし切らない程度に留める
+WEIGHT_OFF_CHORD = -0.30
+#: 小節頭。拍子が当てにならない曲では効かせない
+WEIGHT_DOWNBEAT = 0.25
+#: 低音。曲の土台なので、上の音より優先して残す
+WEIGHT_BASS = 0.30
+BASS_MIDI = 52
+#: 主旋律とみなす音高のずれ（半音）
+MELODY_TOLERANCE = 0.7
+
+
+def musical_weight(event: NoteEvent, context: MusicalContext) -> float:
+    """その音がどれだけ「曲の骨格」かを返す。
+
+    これまでは音量だけで取捨を決めていた。大きい音ほど骨格だという当て推量で、
+    **静かな主旋律より賑やかな伴奏を残してしまう**。原音の解析が入ったので、
+    役割で決められるようになった。
+
+    返すのは音量に足す下駄。負にもなる。
+    """
+    seconds = event.tick / TICKS_PER_SECOND
+    weight = 0.0
+
+    on_melody = False
+    melody = context.melody_at(seconds)
+    if melody is not None:
+        gap = abs(event.midi - melody)
+        if gap <= MELODY_TOLERANCE:
+            weight += WEIGHT_MELODY
+            on_melody = True
+        elif abs(gap - 12) <= MELODY_TOLERANCE or abs(gap - 24) <= MELODY_TOLERANCE:
+            weight += WEIGHT_MELODY_OCTAVE
+
+    chord = context.chord_at(seconds)
+    if chord is not None and chord.root >= 0:
+        degree = chord.degree(event.midi)
+        if degree is not None:
+            weight += WEIGHT_CHORD.get(degree, 0.0)
+        elif not on_melody:
+            # コード外の減点は**採譜の誤り**を狙ったもの。
+            # 旋律の経過音・刺繍音は和音に属さないのが当たり前なので、
+            # そこに当てると旋律が動くたびに削られる。
+            weight += WEIGHT_OFF_CHORD
+
+    if context.is_downbeat(seconds):
+        weight += WEIGHT_DOWNBEAT
+
+    if event.midi <= BASS_MIDI:
+        weight += WEIGHT_BASS
+
+    return weight
+
+
+def is_melody(event: NoteEvent, context: MusicalContext | None) -> bool:
+    """主旋律そのものか（オクターブ違いは含めない）。"""
+    if context is None:
+        return False
+    melody = context.melody_at(event.tick / TICKS_PER_SECOND)
+    return melody is not None and abs(event.midi - melody) <= MELODY_TOLERANCE
+
+
+def importance(event: NoteEvent, context: MusicalContext | None) -> float:
+    """取捨に使う値。解析が無ければ音量そのまま（これまでの振る舞い）。"""
+    if context is None:
+        return event.velocity
+    return event.velocity + musical_weight(event, context)
 
 
 @dataclass
@@ -50,6 +138,10 @@ class ArrangeConfig:
     #: 実際に重なっている数は減らない。雑音らしさ（spectral flatness）は
     #: 音数ではなく**重なりの数**で決まることが実測で分かったので、こちらを制御する。
     max_concurrent: int = 0
+
+    #: 原音の解析結果（mcnb.musical.MusicalContext）。
+    #: あれば、どの音を残すかを音量ではなく**音楽的な役割**で決める
+    context: MusicalContext | None = None
 
     stats: dict = field(default_factory=dict)
 
@@ -162,6 +254,11 @@ def fold_harmonics(song: Song, config: ArrangeConfig) -> Song:
 
     「下に基音があり、自分がそれより十分小さい」ものだけを落とす。
     和音の第5音などを消さないよう、音量の条件を必ず見る。
+
+    **主旋律は落とさない。** 旋律は低音の 1 オクターブ上にいることが多く、
+    音量も伴奏より小さいことがあるので、この判定にそのまま掛けると
+    「倍音」として消える。実際、合成した素材では主旋律が丸ごと消えていた。
+    倍音か旋律かはこの層だけでは区別できないので、原音の解析に聞く。
     """
     by_tick: dict[int, list[NoteEvent]] = defaultdict(list)
     for e in song.events:
@@ -177,6 +274,9 @@ def fold_harmonics(song: Song, config: ArrangeConfig) -> Song:
             louder_at[e.midi] = max(louder_at.get(e.midi, 0.0), e.velocity)
 
         for e in events:
+            if is_melody(e, config.context):
+                kept.append(e)
+                continue
             is_harmonic = False
             for offset in HARMONIC_OFFSETS:
                 fundamental = louder_at.get(e.midi - offset)
@@ -199,10 +299,13 @@ def fold_harmonics(song: Song, config: ArrangeConfig) -> Song:
 
 
 def cap_density(song: Song, config: ArrangeConfig) -> Song:
-    """1 tick に残す音数の上限。音量の大きいものから残す。
+    """1 tick に残す音数の上限。**大事な音**から残す。
 
     人間の編曲は毎秒190音などという密度にはならない。
     ここは「何音まで意味があるか」を実験するための直接的なつまみ。
+
+    解析結果を渡してあれば、主旋律・コードの構成音・低音を優先する。
+    無ければ音量順（これまでの振る舞い）。
     """
     if config.max_per_tick <= 0:
         return song
@@ -214,7 +317,7 @@ def cap_density(song: Song, config: ArrangeConfig) -> Song:
     kept: list[NoteEvent] = []
     removed = 0
     for tick in sorted(by_tick):
-        events = sorted(by_tick[tick], key=lambda e: -e.velocity)
+        events = sorted(by_tick[tick], key=lambda e: -importance(e, config.context))
         kept.extend(events[: config.max_per_tick])
         removed += max(0, len(events) - config.max_per_tick)
 
@@ -241,13 +344,16 @@ def cap_concurrent(song: Song, config: ArrangeConfig) -> Song:
     つまり**「音符ブロックらしい音」を壊しているのは音数ではなく重なりの数**。
     ここが「聴覚パレイドリア」の直接の原因。
 
-    どれを残すかは音量順。大きい音ほど曲の骨格を担っているとみなす。
+    どれを残すかは**音楽的な役割**で決める。解析結果が無ければ音量順に戻る。
+
+    音量順だけだと、静かな主旋律より賑やかな伴奏が残る。ここで旋律が
+    削れると、いくら音数を合わせても曲として成り立たない。
     """
     if config.max_concurrent <= 0:
         return song
 
-    events = sorted(song.events, key=lambda e: (e.tick, -e.velocity))
-    #: 鳴り終わる tick を音量つきで持っておく
+    events = sorted(song.events, key=lambda e: (e.tick, -importance(e, config.context)))
+    #: 鳴り終わる tick を、その音の大事さつきで持っておく
     ringing: list[tuple[int, float]] = []
     kept: list[NoteEvent] = []
     removed = 0
@@ -256,17 +362,18 @@ def cap_concurrent(song: Song, config: ArrangeConfig) -> Song:
         inst = INSTRUMENTS.get(e.instrument)
         # 実測の減衰時間（-40dB）だけ鳴り続けるものとして数える
         length = max(1, round(inst.decay_ticks)) if inst else 2
-        ringing = [(end, v) for end, v in ringing if end > e.tick]
+        weight = importance(e, config.context)
+        ringing = [(end, w) for end, w in ringing if end > e.tick]
 
         if len(ringing) >= config.max_concurrent:
-            # 上限に達している。いま鳴っている一番小さい音より大きければ差し替える
-            quietest = min(ringing, key=lambda r: r[1])
-            if e.velocity <= quietest[1]:
+            # 上限に達している。いま鳴っている一番どうでもいい音より大事なら差し替える
+            least = min(ringing, key=lambda r: r[1])
+            if weight <= least[1]:
                 removed += 1
                 continue
-            ringing.remove(quietest)
+            ringing.remove(least)
 
-        ringing.append((e.tick + length, e.velocity))
+        ringing.append((e.tick + length, weight))
         kept.append(e)
 
     config.stats["cap_concurrent"] = removed

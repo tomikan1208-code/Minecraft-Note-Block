@@ -31,6 +31,11 @@ HOP = 512
 
 PITCH_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
+#: 解析結果の版。項目を足したり意味を変えたら上げる。
+#: 古い結果を既定値で埋めて読むと「分からない」が「確かだ」に化けるので、
+#: 版が違うものは読まずに解析し直す。
+ANALYSIS_VERSION = 1
+
 # --------------------------------------------------------------------------- #
 # 調とコードの定義
 # --------------------------------------------------------------------------- #
@@ -327,6 +332,7 @@ class MusicalContext:
 
     def to_dict(self) -> dict:
         return {
+            "version": ANALYSIS_VERSION,
             "tempo": self.tempo,
             "duration": self.duration,
             "beats": self.beats,
@@ -343,6 +349,45 @@ class MusicalContext:
             "melody_source": self.melody_source,
             "instrumental": self.instrumental,
         }
+
+
+    @classmethod
+    def from_dict(cls, data: dict) -> MusicalContext:
+        """``to_dict()`` で書いたものを読み戻す。
+
+        版が違えば ``ValueError``。古い結果には後から足した項目が無く、
+        既定値で埋めると **「分からない」が「確かだ」に化ける**。
+        たとえば meter_stability が無ければ 1.0（拍子は当てにしてよい）になり、
+        変拍子の曲で小節頭を主張してしまう。
+        """
+        if data.get("version") != ANALYSIS_VERSION:
+            raise ValueError(
+                f"解析結果の版が違います（{data.get('version')} ≠ {ANALYSIS_VERSION}）"
+            )
+        key = Key(**{k: data["key"][k] for k in ("tonic", "minor", "confidence")}) if data.get("key") else None
+        return cls(
+            tempo=data["tempo"],
+            beats=list(data.get("beats", [])),
+            downbeats=list(data.get("downbeats", [])),
+            key=key,
+            keys=[
+                KeySpan(
+                    start=s["start"], end=s["end"],
+                    key=Key(tonic=s["tonic"], minor=s["minor"], confidence=s["confidence"]),
+                )
+                for s in data.get("keys", [])
+            ],
+            chords=[
+                Chord(**{k: c[k] for k in ("start", "end", "root", "quality", "confidence")})
+                for c in data.get("chords", [])
+            ],
+            melody=[(float(t), float(p)) for t, p in data.get("melody", [])],
+            duration=data.get("duration", 0.0),
+            beats_per_bar=data.get("beats_per_bar", 4),
+            meter_stability=data.get("meter_stability", 1.0),
+            melody_source=data.get("melody_source", "mix"),
+            instrumental=data.get("instrumental"),
+        )
 
 
 def _midi_name(midi: float) -> str:
@@ -1036,6 +1081,43 @@ def analyze(
         melody_source=melody_source,
         instrumental=str(instrumental) if instrumental else None,
     )
+
+
+#: 解析結果の置き場。曲ごとに数分かかるので使い回す
+ANALYSIS_CACHE = Path("cache/analysis")
+
+
+def analyze_cached(
+    path: Path | str,
+    duration: float | None = None,
+    cache_dir: Path | None = None,
+    verbose: bool = False,
+) -> MusicalContext:
+    """解析するが、前に解析してあればそれを読む。
+
+    分離と CQT で数分かかるので、同じ曲を作り直すたびに待つのは無駄。
+    """
+    import json
+
+    path = Path(path)
+    cache_dir = Path(cache_dir or ANALYSIS_CACHE)
+    tag = path.stem + (f"_{duration:g}s" if duration else "")
+    cached = cache_dir / f"{tag}.json"
+
+    if cached.is_file():
+        try:
+            context = MusicalContext.from_dict(json.loads(cached.read_text(encoding="utf-8")))
+            if verbose:
+                print(f"  解析済みを使います: {cached}", flush=True)
+            return context
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+            if verbose:
+                print(f"  解析済みを使えません（{e}）。やり直します", flush=True)
+
+    context = analyze(path, duration=duration, verbose=verbose)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cached.write_text(json.dumps(context.to_dict(), ensure_ascii=False), encoding="utf-8")
+    return context
 
 
 def main(argv: list[str] | None = None) -> int:

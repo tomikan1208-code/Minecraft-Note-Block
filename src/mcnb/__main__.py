@@ -116,6 +116,7 @@ def build_one(
     verbose: bool = True,
     arrange_config=None,
     move: str = "vehicle",
+    refresh: bool = False,
 ) -> BuildResult:
     """1つの入力を最後まで通す。CLI からもテストランナーからも使う。"""
     name = name or src.stem
@@ -127,9 +128,17 @@ def build_one(
         if nbs_path.resolve() != src.resolve():
             shutil.copy2(src, nbs_path)
     elif src.suffix.lower() in HYPERCHORON_INPUTS:
-        if verbose:
-            print("\n■ hyperchoron で音楽的変換 → .nbs")
-        run_hyperchoron(src, nbs_path, quiet=not verbose)
+        # 採譜は曲によっては 1 時間を超える。編曲だけ試したいときに毎回やり直すのは
+        # 無駄なので、原音より新しい採譜結果が残っていればそれを使う。
+        fresh = nbs_path.is_file() and nbs_path.stat().st_mtime >= src.stat().st_mtime
+        if fresh and not refresh:
+            if verbose:
+                print(f"\n■ 採譜済みを使います: {nbs_path}")
+                print("  やり直すには --refresh")
+        else:
+            if verbose:
+                print("\n■ hyperchoron で音楽的変換 → .nbs")
+            run_hyperchoron(src, nbs_path, quiet=not verbose)
     else:
         raise ValueError(f"未対応の拡張子: {src.suffix}")
 
@@ -140,6 +149,18 @@ def build_one(
 
     if arrange_config is not None:
         from . import arrange as arrange_mod
+
+        # 原音があるなら解析して渡す。どの音を残すかを音量ではなく
+        # 音楽的な役割（主旋律・コードの構成音・低音）で決められるようになる
+        if arrange_config.context is None and src.suffix.lower() in AUDIO_SUFFIXES:
+            from . import musical as musical_mod
+
+            if verbose:
+                print("\n■ 原音を読み解く（拍・調・コード・主旋律）")
+            arrange_config.context = musical_mod.analyze_cached(src, verbose=verbose)
+            if verbose:
+                print(arrange_config.context.summary())
+
         tune, arrange_config = arrange_mod.arrange(tune, arrange_config)
         if verbose:
             print("\n■ 編曲")
@@ -167,6 +188,10 @@ def _arrange_config(args: argparse.Namespace):
     return arrange_mod.ArrangeConfig(max_concurrent=args.concurrent)
 
 
+#: 原音として扱う拡張子
+AUDIO_SUFFIXES = {".wav", ".mp3", ".flac", ".m4a", ".ogg", ".opus"}
+
+
 def cmd_build(args: argparse.Namespace) -> int:
     try:
         src, fetched_name = resolve_input(args.input)
@@ -189,6 +214,7 @@ def cmd_build(args: argparse.Namespace) -> int:
             max_polyphony=args.max_polyphony,
             arrange_config=_arrange_config(args),
             move=getattr(args, "move", "vehicle"),
+            refresh=getattr(args, "refresh", False),
         )
     except (ValueError, RuntimeError) as e:
         print(f"エラー: {e}", file=sys.stderr)
@@ -283,7 +309,9 @@ def cmd_verify(args: argparse.Namespace) -> int:
         return 1
 
     print(f"■ ビルド: {src}")
-    r = build_one(src, Path(args.out), name=args.name, max_polyphony=args.max_polyphony, verbose=False)
+    r = build_one(src, Path(args.out), name=args.name, max_polyphony=args.max_polyphony,
+                  verbose=False, arrange_config=_arrange_config(args),
+                  refresh=getattr(args, "refresh", False))
     print(f"  {len(r.layout.placements)} 音 / {r.pack.build_parts} 区画 / {r.pack.commands} コマンド")
 
     print("\n■ サーバで検証")
@@ -307,7 +335,8 @@ def cmd_render(args: argparse.Namespace) -> int:
         src, _ = resolve_input(args.input)
         r = build_one(src, Path(args.out), name=args.name,
                       max_polyphony=args.max_polyphony, verbose=False,
-                      arrange_config=_arrange_config(args))
+                      arrange_config=_arrange_config(args),
+                      refresh=getattr(args, "refresh", False))
 
         model = render.AcousticModel(polyphony=args.polyphony)
         if args.measurements and Path(args.measurements).is_file():
@@ -476,6 +505,7 @@ def main(argv: list[str] | None = None) -> int:
                    help="書き出したあとこのディレクトリにコピー（<world>/datapacks）")
     p.add_argument("--world", default=None, metavar="NAME",
                    help="演奏専用ワールドを作ってデータパックまで入れる")
+    p.add_argument("--refresh", action="store_true", help="採譜をやり直す")
     p.set_defaults(func=cmd_build)
 
     p = sub.add_parser("info", help="NBS の中身を表示")
@@ -509,6 +539,7 @@ def main(argv: list[str] | None = None) -> int:
                    help="実測から音響モデルを較正する")
     p.add_argument("--plot", action="store_true", help="スペクトログラムを並べた図も出す")
     p.add_argument("--compare", action="store_true", help="原曲との距離を数値で出す（入力が音源のとき）")
+    p.add_argument("--refresh", action="store_true", help="採譜をやり直す")
     p.set_defaults(func=cmd_render)
 
     p = sub.add_parser("analyze", help="原音から拍・調・コード進行・主旋律を取り出す")
@@ -543,6 +574,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", default="out/verify")
     p.add_argument("--sample", type=int, default=24, help="ブロックを確認する箇所の数")
     p.add_argument("--max-polyphony", type=int, default=200)
+    p.add_argument("--concurrent", type=int, default=0, metavar="N",
+                   help="編曲: 同時に鳴っている音を N 個までに抑える（0 で編曲なし）")
+    p.add_argument("--refresh", action="store_true", help="採譜をやり直す")
     p.add_argument("--memory", default="2G")
     p.set_defaults(func=cmd_verify)
 
