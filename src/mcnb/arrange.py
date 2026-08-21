@@ -136,6 +136,12 @@ def quantize(song: Song, config: ArrangeConfig) -> Song:
     拍が分かっているなら、「この枠には音符が 1 個」と決めてしまえばよい。
     枠の中で近すぎる音程（既定で半音以内）は、大事なほうだけ残す。
     和音は音程が離れているので残る。
+
+    **音符は動かさない。** 格子は「どれを残すか」を決めるためだけに使う。
+    格子の位置へ動かすと、拍が Minecraft の tick と割り切れないせいで
+    音の間隔がよれる。184.6 BPM だと 16 分音符は 1.63 tick で、整数に丸めると
+    1 tick と 2 tick を行き来する。±20% の揺れになり、**ラグに聞こえる**。
+    実際それをやって「重い、ラグってる」と言われた。
     """
     if not config.quantize or config.context is None:
         return song
@@ -157,7 +163,7 @@ def quantize(song: Song, config: ArrangeConfig) -> Song:
 
     kept: list[NoteEvent] = []
     removed = 0
-    for tick, events in cells.items():
+    for events in cells.values():
         events.sort(key=lambda e: -importance(e, config.context, config.time_offset))
         chosen: list[NoteEvent] = []
         drums: set[str] = set()
@@ -176,7 +182,7 @@ def quantize(song: Song, config: ArrangeConfig) -> Song:
             ):
                 removed += 1
                 continue
-            chosen.append(replace(e, tick=tick))
+            chosen.append(e)          # tick はそのまま。動かすとよれる
         kept.extend(chosen)
 
     config.stats["quantize"] = removed
