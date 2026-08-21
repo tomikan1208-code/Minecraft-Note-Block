@@ -1,6 +1,6 @@
 """演奏専用のワールドを新規生成する。
 
-既存のワールドを書き換えない。チートON・クリエイティブ・ボイド地形の
+既存のワールドを書き換えない。チートON・クリエイティブ・デフォルトのフラット地形の
 まっさらなワールドを毎回作って、そこにデータパックを入れる。
 
 level.dat を手で書き起こすとバージョンごとの差分で壊れやすいので、
@@ -23,11 +23,19 @@ from pathlib import Path
 from .mcassets import default_minecraft_dir, resolve_version
 from .server import Server, ServerError, ensure_server_jar, find_java
 
-#: 音符ブロックの構造しか無いので、地形は完全なボイドにする
-VOID_GENERATOR = {
-    "layers": [{"block": "minecraft:air", "height": 1}],
-    "biome": "minecraft:the_void",
+#: バニラの「クラシックフラット」と同じ層。
+#: generator-settings を省くとサーバが {} を書き、それは **層なし＝ボイド** になる。
+#: 「空中は嫌」なので明示的に地面を作る。
+CLASSIC_FLAT = {
+    "layers": [
+        {"block": "minecraft:bedrock", "height": 1},
+        {"block": "minecraft:dirt", "height": 2},
+        {"block": "minecraft:grass_block", "height": 1},
+    ],
+    "biome": "minecraft:plains",
 }
+#: 草ブロックの上、プレイヤーが立つ高さ。岩盤(-64)+土(-63,-62)+草(-61) なので -60
+FLAT_SURFACE_Y = -60
 
 
 @dataclass(frozen=True)
@@ -67,7 +75,7 @@ def create_world(
     name: str,
     game_dir: Path | None = None,
     datapack: Path | None = None,
-    spawn: tuple[int, int, int] = (-10, 100, 0),
+    spawn: tuple[int, int, int] = (-10, FLAT_SURFACE_Y, 0),
     mc: str | None = None,
     overwrite: bool = False,
     memory: str = "2G",
@@ -99,7 +107,7 @@ def create_world(
         level_name=name,
         extra={
             "level-type": "minecraft:flat",
-            "generator-settings": json.dumps(VOID_GENERATOR),
+            "generator-settings": json.dumps(CLASSIC_FLAT),
             "spawn-protection": "0",
         },
     )

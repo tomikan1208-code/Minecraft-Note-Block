@@ -270,10 +270,9 @@ class Server:
 
         props = {
             "level-name": level_name,
+            # 地形は呼び出し側が決める。generator-settings を書かなければ
+            # バニラのデフォルト（岩盤+土2+草）のフラットになる
             "level-type": "minecraft:flat",
-            "generator-settings": json.dumps(
-                {"layers": [{"block": "minecraft:air", "height": 1}], "biome": "minecraft:the_void"}
-            ),
             "gamemode": "creative",
             "force-gamemode": "true",
             "difficulty": "peaceful",

@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 import random
 import re
 import shutil
@@ -120,7 +121,17 @@ def verify_layout(
         shutil.rmtree(world)
 
     srv = Server(root, jar, java, memory=memory)
-    srv.configure(accept_eula=True, level_name=LEVEL_NAME)
+    # 検証は地形が要らないのでボイドにして軽くする
+    srv.configure(
+        accept_eula=True,
+        level_name=LEVEL_NAME,
+        extra={
+            "level-type": "minecraft:flat",
+            "generator-settings": json.dumps(
+                {"layers": [{"block": "minecraft:air", "height": 1}], "biome": "minecraft:the_void"}
+            ),
+        },
+    )
     srv.install_datapack(pack_dir, level_name=LEVEL_NAME)
 
     result = VerifyResult()

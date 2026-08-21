@@ -66,7 +66,7 @@ def build_one(
     src: Path,
     out_root: Path,
     name: str | None = None,
-    origin: tuple[int, int, int] = (0, 100, 0),
+    origin: tuple[int, int, int] = (0, layout.FLAT_SURFACE_Y, 0),
     spacing: int = layout.SPACING,
     max_polyphony: int = 200,
     verbose: bool = True,
@@ -275,7 +275,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("input")
     p.add_argument("--name", default=None)
     p.add_argument("--out", default=str(DEFAULT_OUT))
-    p.add_argument("--origin", type=int, nargs=3, default=[0, 100, 0], metavar=("X", "Y", "Z"))
+    p.add_argument("--origin", type=int, nargs=3, default=[0, layout.FLAT_SURFACE_Y, 0],
+                   metavar=("X", "Y", "Z"), help="既定はフラット地形の地表 (0, -60, 0)")
     p.add_argument("--spacing", type=int, default=layout.SPACING, help="1 tick あたりの X ブロック数")
     p.add_argument("--max-polyphony", type=int, default=200,
                    help="1 tick の最大同時発音（バニラ247 / RSLS導入なら4095まで）")

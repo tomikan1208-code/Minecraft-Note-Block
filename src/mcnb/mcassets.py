@@ -120,6 +120,10 @@ def list_installed_releases(mc_dir: Path) -> list[tuple[str, str]]:
         meta = _version_meta(mc_dir, entry.name)
         if meta is None or meta.get("type") != "release":
             continue
+        # Fabric などのローダーは inheritsFrom で本体を参照するだけで、
+        # jar もダウンロード情報も持たない。バニラの本体だけを拾う
+        if meta.get("inheritsFrom") or "client" not in meta.get("downloads", {}):
+            continue
         if not (entry / f"{entry.name}.jar").is_file():
             continue
         found.append((entry.name, meta.get("releaseTime", "")))

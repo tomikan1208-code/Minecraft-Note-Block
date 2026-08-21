@@ -49,6 +49,10 @@ Y_PERIOD = 3
 SPACING = 3
 #: プレイヤーの耳のおおよその高さ（足元からの相対）
 EAR_HEIGHT = 1.62
+#: バニラのデフォルトのフラット地形で、プレイヤーが立つ高さ。
+#: 岩盤(-64) + 土(-63,-62) + 草(-61) なので足元は -60。
+#: ここを原点にすると構造が地面の上に建ち、空中に浮かない。
+FLAT_SURFACE_Y = -60
 
 
 @dataclass(frozen=True)
@@ -164,7 +168,10 @@ def _ear_distance(dy: int, dz: int) -> float:
     return hypot(dy - EAR_HEIGHT, dz)
 
 
-def _placement_error(dy: int, dz: int, target_d: float, target_pan: float) -> float:
+def _placement_error(dy: int, dz: int, target_d: float, target_pan: float, min_dy: int = 0) -> float:
+    # 楽器ブロックが dy-1 に来るので、min_dy より下は地面に埋まる
+    if dy < min_dy:
+        return float("inf")
     d = _ear_distance(dy, dz)
     if d < MIN_DISTANCE or d > MAX_DISTANCE:
         return float("inf")
@@ -176,15 +183,19 @@ def _placement_error(dy: int, dz: int, target_d: float, target_pan: float) -> fl
 
 def build_layout(
     song: Song,
-    origin: tuple[int, int, int] = (0, 100, 0),
+    origin: tuple[int, int, int] = (0, FLAT_SURFACE_Y, 0),
     spacing: int = SPACING,
     max_polyphony: int = 200,
+    min_dy: int = Y_PERIOD,
 ) -> Layout:
     """Song を直線コリドーに配置する。
 
     ``max_polyphony`` を超える tick では、音量の小さいノートから捨てる。
     バニラなら 247、RSLS 導入済みなら 4095 まで上げられるが、
     実際には音が濁るので既定値は控えめにしてある。
+
+    ``min_dy`` より下には置かない。フラット地形の地面に構造を埋めないため。
+    定位の理想位置は必ず真上寄り（cos ≥ 0）なので、上半分だけでほぼ足りる。
     """
     layout = Layout(song=song, origin=origin, spacing=spacing)
     x0, y0, z0 = origin
@@ -220,24 +231,13 @@ def build_layout(
             for cy, cz in _spiral(sdy, sdz):
                 if (cy, cz) in used:
                     continue
-                err = _placement_error(cy, cz, target_d, note.panning)
+                err = _placement_error(cy, cz, target_d, note.panning, min_dy)
                 if err < best_err:
                     best, best_err = (cy, cz), err
                     if err < 0.75:  # 十分近ければ打ち切る
                         break
 
-            # 真上が埋まっていたら真下も試す（対称なので定位は同じ）
-            if best is None:
-                for cy, cz in _spiral(-sdy, sdz):
-                    if (cy, cz) in used:
-                        continue
-                    err = _placement_error(cy, cz, target_d, note.panning)
-                    if err < best_err:
-                        best, best_err = (cy, cz), err
-                        if err < 0.75:
-                            break
-
-            if best is None:
+            if best is None or best_err == float("inf"):
                 layout.dropped_unplaceable += 1
                 continue
 
