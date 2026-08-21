@@ -118,6 +118,7 @@ def build_one(
     move: str = "vehicle",
     refresh: bool = False,
     source: str = "mix",
+    blocks_per_note: int = 1,
 ) -> BuildResult:
     """1つの入力を最後まで通す。CLI からもテストランナーからも使う。"""
     name = name or src.stem
@@ -149,7 +150,7 @@ def build_one(
         sheet = score_mod.read_score(src)
         if verbose:
             print(score_mod.summary_or_empty(sheet))
-        tune = score_mod.to_song(sheet, name=name)
+        tune = score_mod.to_song(sheet, name=name, blocks_per_note=blocks_per_note)
         nbs_path = out / f"{name}.nbs"
     elif src.suffix.lower() == ".nbs":
         if nbs_path.resolve() != src.resolve():
@@ -292,6 +293,7 @@ def cmd_build(args: argparse.Namespace) -> int:
             move=getattr(args, "move", "vehicle"),
             refresh=getattr(args, "refresh", False),
             source=getattr(args, "source", "mix"),
+            blocks_per_note=getattr(args, "blocks_per_note", 1),
         )
     except (ValueError, RuntimeError) as e:
         print(f"エラー: {e}", file=sys.stderr)
@@ -413,7 +415,8 @@ def cmd_render(args: argparse.Namespace) -> int:
         r = build_one(src, Path(args.out), name=args.name,
                       max_polyphony=args.max_polyphony, verbose=False,
                       arrange_config=_arrange_config(args),
-                      refresh=getattr(args, "refresh", False))
+                      refresh=getattr(args, "refresh", False),
+                      blocks_per_note=getattr(args, "blocks_per_note", 1))
 
         model = render.AcousticModel(polyphony=args.polyphony)
         if args.measurements and Path(args.measurements).is_file():
@@ -608,6 +611,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--world", default=None, metavar="NAME",
                    help="演奏専用ワールドを作ってデータパックまで入れる")
     p.add_argument("--refresh", action="store_true", help="採譜をやり直す")
+    p.add_argument("--blocks-per-note", type=int, default=1, choices=(1, 2, 3),
+                   help="楽譜入力のとき、1 音符に使う音符ブロックの数（2 以上でオクターブを重ねる）")
     p.set_defaults(func=cmd_build)
 
     p = sub.add_parser("info", help="NBS の中身を表示")
@@ -667,6 +672,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--plot", action="store_true", help="スペクトログラムを並べた図も出す")
     p.add_argument("--compare", action="store_true", help="原曲との距離を数値で出す（入力が音源のとき）")
     p.add_argument("--refresh", action="store_true", help="採譜をやり直す")
+    p.add_argument("--blocks-per-note", type=int, default=1, choices=(1, 2, 3),
+                   help="楽譜入力のとき、1 音符に使う音符ブロックの数（2 以上でオクターブを重ねる）")
     p.set_defaults(func=cmd_render)
 
     p = sub.add_parser("analyze", help="原音から拍・調・コード進行・主旋律を取り出す")
@@ -730,6 +737,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="採譜に使う音。mix=原音のまま / instrumental=声を抜いた伴奏だけ")
     p.add_argument("--refresh", action="store_true", help="採譜をやり直す")
     p.add_argument("--memory", default="2G")
+    p.add_argument("--blocks-per-note", type=int, default=1, choices=(1, 2, 3),
+                   help="楽譜入力のとき、1 音符に使う音符ブロックの数（2 以上でオクターブを重ねる）")
     p.set_defaults(func=cmd_verify)
 
     p = sub.add_parser("setup", help="音源抽出 + Fabric + 軽量化 Mod")

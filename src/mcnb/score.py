@@ -238,36 +238,83 @@ def voice_for(midi: int) -> str | None:
     return None
 
 
-def to_song(score: Score, name: str = "score", tempo: float | None = None) -> Song:
-    """譜面を Song にする。**音は足しも引きもしない。**"""
+def place(midi: int) -> tuple[str, int] | None:
+    """置ける楽器と音高。音域外ならオクターブで折り返す。
+
+    音符ブロック全体で出せるのは MIDI 30〜102。ピアノ譜はそれより外まで
+    使うので（真っ黒ナイト・オブ・ナイツは 21〜108）、外れたぶんは
+    オクターブ単位で中へ寄せる。音名は変わらない。
+    """
+    for shift in (0, 12, -12, 24, -24, 36, -36):
+        moved = midi + shift
+        voice = voice_for(moved)
+        if voice:
+            return voice, moved
+    return None
+
+
+#: 1 つの音符に使う音符ブロックの数ごとの、重ねる音程（半音）。
+#: 音符ブロックは 1 個で 1 音しか出せず、しかも音色ごとに 2 オクターブしかない。
+#: 「1 音 = 1 ブロック」に縛られると、ピアノ 1 音の厚みが出せない。
+#: 2 個目は 1 オクターブ下（土台）、3 個目は 1 オクターブ上（きらめき）。
+LAYER_OFFSETS = (0, -12, +12)
+#: 重ねる音の音量。元の音より小さくして、主役を食わないようにする
+LAYER_GAINS = (1.0, 0.55, 0.40)
+
+
+def to_song(
+    score: Score,
+    name: str = "score",
+    tempo: float | None = None,
+    blocks_per_note: int = 1,
+) -> Song:
+    """譜面を Song にする。**譜面に無い音符は増やさない。**
+
+    ``blocks_per_note`` は 1 つの音符に使う音符ブロックの数。
+    1 なら書いてあるとおり。2 以上ならオクターブを重ねて厚みを出す
+    （音符は増えないが、鳴らすブロックは増える）。
+    """
     bpm = tempo or score.tempo
     seconds_per_beat = 60.0 / bpm
+    layers = max(1, min(blocks_per_note, len(LAYER_OFFSETS)))
 
     events: list[NoteEvent] = []
     dropped = 0
     for note in score.notes:
-        voice = voice_for(note.midi)
-        if voice is None:
-            dropped += 1
-            continue
         at = ((note.measure - 1) * score.beats_per_bar + note.beat) * seconds_per_beat
-        events.append(NoteEvent(
-            tick=max(0, round(at * TICKS_PER_SECOND)),
-            instrument=voice, midi=note.midi, velocity=DEFAULT_VELOCITY,
-            # 左手（下の段）を左、右手を右に振る。人が弾く配置に合わせる
-            panning=-0.35 if note.staff >= 2 else 0.35,
-        ))
+        tick = max(0, round(at * TICKS_PER_SECOND))
+        # 左手（下の段）を左、右手を右に振る。人が弾く配置に合わせる
+        panning = -0.35 if note.staff >= 2 else 0.35
+
+        placed = 0
+        for offset, gain in zip(LAYER_OFFSETS[:layers], LAYER_GAINS[:layers], strict=True):
+            spot = place(note.midi + offset)
+            if spot is None:
+                continue
+            voice, midi = spot
+            if placed and any(e.tick == tick and e.midi == midi for e in events[-8:]):
+                continue                      # 折り返しで元の音と同じ高さになった
+            events.append(NoteEvent(
+                tick=tick, instrument=voice, midi=midi,
+                velocity=DEFAULT_VELOCITY * gain,
+                panning=panning if offset else panning * 0.5,
+            ))
+            placed += 1
+        if not placed:
+            dropped += 1
 
     events.sort(key=lambda e: (e.tick, e.midi))
     song = Song(name=name, events=events, source=str(score.title))
     if dropped:
-        song.source += f"（音域外で置けなかった音 {dropped}）"
+        song.source += f"（置けなかった音 {dropped}）"
     return song
 
 
-def load(path: Path | str, name: str | None = None, tempo: float | None = None) -> Song:
+def load(path: Path | str, name: str | None = None, tempo: float | None = None,
+         blocks_per_note: int = 1) -> Song:
     score = read_score(path)
-    return to_song(score, name=name or Path(path).stem, tempo=tempo)
+    return to_song(score, name=name or Path(path).stem, tempo=tempo,
+                   blocks_per_note=blocks_per_note)
 
 
 def summary_or_empty(score: Score) -> str:
