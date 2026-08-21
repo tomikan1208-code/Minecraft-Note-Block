@@ -127,3 +127,111 @@ def test_capping_keeps_the_melody():
     kept_music = _melody_survival(by_music, context)
     assert kept_music > kept_volume, f"音量順 {kept_volume}/{total} / 音楽的 {kept_music}/{total}"
     assert kept_music >= total * 0.8, f"主旋律が {kept_music}/{total} しか残っていない"
+
+
+# --------------------------------------------------------------------------- #
+# 役割ごとの音色と強弱
+# --------------------------------------------------------------------------- #
+
+
+def _mixed_song() -> Song:
+    """主旋律（小さい）と伴奏（大きい）が同じ音色で重なっている曲。
+
+    採譜はこうなりがち。原音の音色をなぞって楽器を選ぶので、旋律も伴奏も harp
+    になり、しかも旋律のほうが音量が小さい。
+    """
+    line = [72, 74, 76, 77, 79, 77, 76, 74]
+    events: list[NoteEvent] = []
+    for index, pitch in enumerate(line):
+        tick = index * 4
+        events.append(_note(tick, pitch, 0.30))
+        for midi in (55, 60, 64, 67):
+            events.append(_note(tick, midi, 0.85))
+    return Song(name="mixed", events=events)
+
+
+def _melody_context(line=(72, 74, 76, 77, 79, 77, 76, 74), step: int = 4) -> MusicalContext:
+    melody = [
+        (tick / TICKS_PER_SECOND, float(line[min(tick // step, len(line) - 1)]))
+        for tick in range(len(line) * step)
+    ]
+    return _context(melody=melody, duration=len(line) * step / TICKS_PER_SECOND)
+
+
+def test_melody_gets_its_own_voice():
+    """主旋律を伴奏と違う音色にすること。
+
+    音符ブロックは1つの音色につき2オクターブしかない。同じ音色で重ねると、
+    いくら音量を上げても旋律は伴奏に溶ける。
+    """
+    context = _melody_context()
+    song = _mixed_song()
+    out, _ = A.arrange(song, A.ArrangeConfig(context=context, max_concurrent=0))
+
+    melody = [e for e in out.events if A.is_melody(e, context)]
+    assert melody, "主旋律が残っていない"
+    others = {e.instrument for e in out.events if not A.is_melody(e, context)}
+    assert all(e.instrument not in others for e in melody), (
+        f"旋律 {[e.instrument for e in melody][:3]} が伴奏 {others} と同じ音色"
+    )
+
+
+def test_melody_is_placed_closer_than_the_accompaniment():
+    """主旋律を伴奏より近くに置くこと。
+
+    音符ブロックには音量そのものが無い。layout が音量を距離に変換するので、
+    強弱をつける手段はこれしかない。採譜のままだと旋律のほうが音量が小さく、
+    **旋律が伴奏より遠くに置かれて小さくなる**。
+    """
+    from mcnb import layout as L
+
+    context = _melody_context()
+    song = _mixed_song()
+
+    def distances(config):
+        out, _ = A.arrange(song, config)
+        melody = [L.target_distance(e.velocity) for e in out.events if A.is_melody(e, context)]
+        rest = [L.target_distance(e.velocity) for e in out.events if not A.is_melody(e, context)]
+        return sum(melody) / len(melody), sum(rest) / len(rest)
+
+    plain_melody, plain_rest = distances(
+        A.ArrangeConfig(context=context, voice_roles=False, emphasize_melody=False)
+    )
+    assert plain_melody > plain_rest, "前提が崩れている — 素の時点で旋律が近い"
+
+    melody, rest = distances(A.ArrangeConfig(context=context))
+    assert melody < rest, f"旋律 {melody:.1f} / 伴奏 {rest:.1f} ブロック"
+
+
+def test_percussion_is_left_alone():
+    """打楽器は音程を持たないので、音色も強弱も触らないこと。"""
+    context = _melody_context()
+    drums = [
+        NoteEvent(tick=t, instrument="snare", midi=64, velocity=0.7) for t in range(0, 32, 4)
+    ]
+    song = Song(name="d", events=drums)
+    out, _ = A.arrange(song, A.ArrangeConfig(context=context, max_concurrent=0))
+    assert [(e.tick, e.instrument, e.velocity) for e in out.events] == [
+        (e.tick, e.instrument, e.velocity) for e in drums
+    ]
+
+
+def test_the_two_bands_neither_overlap_nor_saturate():
+    """主旋律と伴奏の帯が、重ならず、距離の上下限にも当たらないこと。
+
+    重なれば強弱が逆転しうるし、上下限に当たれば帯の中の音が全部同じ距離に
+    潰れて抑揚が消える。どちらも定数をいじった拍子に起こる。
+    """
+    from mcnb import layout as L
+
+    m_lo, m_hi = A.MELODY_BAND
+    a_lo, a_hi = A.ACCOMPANIMENT_BAND
+    assert a_hi < m_lo, f"帯が重なっている 伴奏{a_hi} / 旋律{m_lo}"
+
+    for name, (lo, hi) in (("主旋律", A.MELODY_BAND), ("伴奏", A.ACCOMPANIMENT_BAND)):
+        near, far = L.target_distance(hi), L.target_distance(lo)
+        assert near > L.MIN_DISTANCE, f"{name}の近い端が下限に張り付く（{near}）"
+        assert far < L.MAX_DISTANCE, f"{name}の遠い端が上限に張り付く（{far}）"
+        assert far > near, f"{name}の帯が潰れている"
+
+    assert L.target_distance(m_lo) < L.target_distance(a_hi), "旋律が伴奏より遠い"

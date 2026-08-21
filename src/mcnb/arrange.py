@@ -92,6 +92,116 @@ def musical_weight(event: NoteEvent, context: MusicalContext) -> float:
     return weight
 
 
+# --------------------------------------------------------------------------- #
+# 役割ごとの音色と音量
+# --------------------------------------------------------------------------- #
+
+#: 主旋律に使う楽器。音域ごとに、伴奏と音色がぶつからないものを選ぶ。
+#: (下限MIDI, 上限MIDI, 楽器) の並び。上から順に見て最初に入るものを使う。
+#:
+#: harp を避けているのは、hyperchoron が伴奏の大半を harp に割り当てるから。
+#: 同じ音色で重ねると、いくら音量を上げても旋律は伴奏に溶ける。
+MELODY_VOICES = (
+    (54, 78, "bit"),        # エメラルドブロック。減衰 4.5 tick で粒が立つ
+    (66, 90, "flute"),      # 粘土。中高域で通る
+    (78, 102, "bell"),      # 金ブロック。高域はこれ
+    (42, 66, "guitar"),     # 羊毛。低めの旋律
+)
+#: 低音に使う楽器
+BASS_VOICE = "bass"
+#: 打楽器は音程を持たないので触らない
+PERCUSSION = {"snare", "hat", "basedrum"}
+
+#: 主旋律と伴奏を、それぞれ別の音量の帯に割り当てる。
+#:
+#: 音符ブロックには音量そのものが無い。layout が音量を**プレイヤーからの距離**に
+#: 変換するので、距離の割り振りが唯一の強弱手段になる。
+#: だから「何倍にする」ではなく「どの帯に置く」で決める。
+#:
+#: 倍率でやると、元の音量差が大きいときに逆転できない。実際 1.4 倍では
+#: 音量 0.30 の旋律は 0.42 にしかならず、0.85 の伴奏に負けたままだった。
+#: 帯を分ければ**重ならないことが構造的に保証される**。
+#: 帯の中では元の強弱の順番を保つので、旋律の中の抑揚は残る。
+#:
+#: 端は layout の距離の上下限（2〜45 ブロック）に当たらないように取る。
+#: 当たると帯の中の音が全部同じ距離に潰れ、抑揚が消える。
+#:   音量 0.958 で最短 2 ブロック、0.063 で最長 45 ブロック。
+#: 主旋律は 2.9〜10.6 ブロック、伴奏は 14.4〜28.8 ブロックに収まる。
+MELODY_BAND = (0.78, 0.94)
+ACCOMPANIMENT_BAND = (0.40, 0.70)
+
+
+def melody_voice(midi: int) -> str | None:
+    """その音高の主旋律に使う楽器。置けなければ None。"""
+    for lo, hi, name in MELODY_VOICES:
+        if lo <= midi <= hi:
+            return name
+    return None
+
+
+def voice_by_role(song: Song, config: ArrangeConfig) -> Song:
+    """主旋律と低音に、役割に合った楽器を割り当てる。
+
+    採譜は原音の音色をなぞって楽器を選ぶので、**旋律と伴奏が同じ音色になる**。
+    音符ブロックは1つの音色につき2オクターブしかなく、同じ音色が重なると
+    どれが旋律か分からなくなる。ここで音色を分ける。
+
+    音域外なら元のままにする。無理に移すと音程が変わってしまう。
+    """
+    if not config.voice_roles or config.context is None:
+        return song
+
+    changed = 0
+    events: list[NoteEvent] = []
+    for e in song.events:
+        if e.instrument in PERCUSSION:
+            events.append(e)
+            continue
+        want: str | None = None
+        if is_melody(e, config.context):
+            want = melody_voice(e.midi)
+        elif e.midi <= BASS_MIDI:
+            want = BASS_VOICE
+        if want and want != e.instrument:
+            inst = INSTRUMENTS.get(want)
+            if inst and inst.base_midi <= e.midi <= inst.base_midi + 24:
+                events.append(replace(e, instrument=want))
+                changed += 1
+                continue
+        events.append(e)
+
+    config.stats["voice_by_role"] = changed
+    return Song(name=song.name, events=events, source=song.source)
+
+
+def emphasize_melody(song: Song, config: ArrangeConfig) -> Song:
+    """主旋律を前に、伴奏を後ろに下げる。
+
+    layout は音量を**プレイヤーからの距離**に変換する。音量を上げた音は
+    近くに置かれ、実際に大きく聞こえる。音符ブロックには音量そのものが無いので、
+    強弱をつける手段はこれしかない。
+    """
+    if not config.emphasize_melody or config.context is None:
+        return song
+
+    lifted = 0
+    events: list[NoteEvent] = []
+    for e in song.events:
+        if e.instrument in PERCUSSION:
+            events.append(e)
+            continue
+        if is_melody(e, config.context):
+            lo, hi = MELODY_BAND
+            lifted += 1
+        else:
+            lo, hi = ACCOMPANIMENT_BAND
+        level = lo + max(0.0, min(1.0, e.velocity)) * (hi - lo)
+        events.append(replace(e, velocity=level))
+
+    config.stats["emphasize_melody"] = lifted
+    return Song(name=song.name, events=events, source=song.source)
+
+
 def is_melody(event: NoteEvent, context: MusicalContext | None) -> bool:
     """主旋律そのものか（オクターブ違いは含めない）。"""
     if context is None:
@@ -138,6 +248,11 @@ class ArrangeConfig:
     #: 実際に重なっている数は減らない。雑音らしさ（spectral flatness）は
     #: 音数ではなく**重なりの数**で決まることが実測で分かったので、こちらを制御する。
     max_concurrent: int = 0
+
+    #: 主旋律と低音に、役割に合った楽器を割り当てる
+    voice_roles: bool = True
+    #: 主旋律を前に、伴奏を後ろに下げる（音量＝距離）
+    emphasize_melody: bool = True
 
     #: 原音の解析結果（mcnb.musical.MusicalContext）。
     #: あれば、どの音を残すかを音量ではなく**音楽的な役割**で決める
@@ -387,11 +502,18 @@ def cap_concurrent(song: Song, config: ArrangeConfig) -> Song:
 
 #: 掛ける順番。倍音を落としてから重複を消し、最後に密度を切る
 PIPELINE = [
+    # 音色は先に決める。cap_concurrent が楽器ごとの減衰時間で重なりを数えるので、
+    # あとから楽器を変えると数え直しになる
+    ("voice_by_role", voice_by_role, "voice_roles"),
     ("fold_harmonics", fold_harmonics, "fold_harmonics"),
     ("dedupe", dedupe, "dedupe"),
     ("thin_sustains", thin_sustains, "thin_sustains"),
     ("cap_density", cap_density, None),
     ("cap_concurrent", cap_concurrent, None),
+    # 強弱は**最後**。dedupe がまとめた音のぶんを足し戻して音量を上げるので、
+    # 先に帯へ収めても後から押し出されてしまう。
+    # 取捨のほうは音量ではなく importance() で決めているので、順番の影響を受けない
+    ("emphasize_melody", emphasize_melody, "emphasize_melody"),
 ]
 
 
