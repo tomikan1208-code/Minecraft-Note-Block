@@ -34,13 +34,22 @@ class Process:
 
 
 def _run(args: list[str]) -> str:
+    return _run_full(args)[1]
+
+
+def _run_full(args: list[str]) -> tuple[int, str]:
+    """``(終了コード, 出力)``。
+
+    メッセージの文言で成否を判定しない。日本語 Windows の ``taskkill`` は
+    「成功: ...」と出すが、コンソールのコードページ次第で文字化けするため。
+    """
     try:
         proc = subprocess.run(
             args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30
         )
     except (OSError, subprocess.TimeoutExpired):
-        return ""
-    return (proc.stdout or "") + (proc.stderr or "")
+        return 1, ""
+    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
 def listeners_on(port: int) -> list[Process]:
@@ -89,9 +98,10 @@ def kill(process: Process) -> bool:
     if process.pid == os.getpid():
         return False
     if sys.platform == "win32":
-        result = _run(["taskkill", "/F", "/T", "/PID", str(process.pid)])
-        return "SUCCESS" in result.upper() or "成功" in result
-    return bool(_run(["kill", "-9", str(process.pid)]) is not None)
+        code, _ = _run_full(["taskkill", "/F", "/T", "/PID", str(process.pid)])
+        return code == 0
+    code, _ = _run_full(["kill", "-9", str(process.pid)])
+    return code == 0
 
 
 def cleanup(ports: list[int] | None = None, java: bool = True, verbose: bool = True) -> int:

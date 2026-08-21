@@ -211,8 +211,9 @@ def verify_layout(
             check_ticks = [t for t in sorted(by_tick) if by_tick[t]][:6]
 
             if check_ticks:
-                last_x = layout.player_pos(check_ticks[-1])[0]
-                _forceload(rcon, layout.origin[0] - 4, bz1 - 1, last_x + 4, bz2 + 1)
+                # player_x は小数になったので forceload に渡す前に整数化する
+                last_x = int(layout.player_x(check_ticks[-1])) + 4
+                _forceload(rcon, layout.origin[0] - 4, bz1 - 1, last_x, bz2 + 1)
 
             rcon.command("tick freeze")
             rcon.command("scoreboard players set #t mcnb 0")

@@ -53,15 +53,33 @@ SETUP_COMMANDS = [
 #: +X（東）を向く yaw
 YAW_EAST = -90.0
 
+#: 歩き速度と movement_speed 属性の関係。属性 0.1 が歩き 4.317 ブロック/秒
+WALK_SPEED_PER_ATTRIBUTE = 43.17
+BASE_MOVEMENT_SPEED = 0.1
+#: 属性で速度を上げるときの識別子
+SPEED_MODIFIER_ID = "mcnb:run"
+
+
+def run_modifier_amount(blocks_per_second: float) -> float:
+    """``add_multiplied_base`` に渡す倍率。
+
+    ``movement_speed`` は既定 0.1 で、これが歩き 4.317 ブロック/秒にあたる。
+    ``add_multiplied_base`` の A は「基準値の A 倍を足す」なので、
+    最終値は 0.1 * (1 + A) になる。
+    """
+    target = blocks_per_second / WALK_SPEED_PER_ATTRIBUTE
+    return max(0.0, target / BASE_MOVEMENT_SPEED - 1.0)
+
 #: 1回の build 関数に詰めるコマンド数の上限
 BUILD_BATCH_COMMANDS = 6000
 #: 1回の build 関数がカバーする X 幅（ブロック）。forceload のチャンク数を抑えるため
 BUILD_BATCH_SPAN = 256
 #: forceload してから setblock までに待つ tick 数。チャンク読み込みは非同期
 CHUNK_LOAD_DELAY = 10
-#: 再生中に forceload する窓の幅（ブロック）と、張り替える間隔（tick）
-PLAY_WINDOW = 192
-PLAY_WINDOW_TICKS = 48
+#: 再生中に forceload する窓の幅（ブロック）と、張り替える間隔（tick）。
+#: 走る速度なら 1 秒で 7 ブロックしか進まないので、窓は狭くて足りる
+PLAY_WINDOW = 96
+PLAY_WINDOW_TICKS = 100
 
 NS = "mcnb"
 
@@ -101,7 +119,13 @@ class _Writer:
 def _build_commands(placements: list[Placement]) -> list[str]:
     """音符ブロックと楽器ブロックを置くコマンド。真上の空気も確保する。"""
     out: list[str] = []
+    # 同じスロットを複数の tick が共有することがあるので、位置ごとに1回だけ置く
+    placed: set[tuple[int, int, int]] = set()
     for p in placements:
+        pos = (p.x, p.y, p.z)
+        if pos in placed:
+            continue
+        placed.add(pos)
         block = INSTRUMENTS[p.instrument].block
         ix, iy, iz = p.instrument_block
         out.append(f"setblock {ix} {iy} {iz} minecraft:{block} replace")
@@ -193,7 +217,13 @@ def _panel_commands(x0: int, y0: int, z0: int) -> list[str]:
 # --------------------------------------------------------------------------- #
 
 
-def emit(layout: Layout, out_dir: Path, name: str | None = None, overwrite: bool = True) -> DatapackResult:
+def emit(
+    layout: Layout,
+    out_dir: Path,
+    name: str | None = None,
+    overwrite: bool = True,
+    run_mode: bool = False,
+) -> DatapackResult:
     """データパックを ``out_dir`` に書き出す。"""
     name = name or layout.song.name
     root = Path(out_dir)
@@ -286,19 +316,40 @@ def emit(layout: Layout, out_dir: Path, name: str | None = None, overwrite: bool
     )
 
     # --- 演奏 -------------------------------------------------------------- #
-    w.write(
-        "play.mcfunction",
-        [
-            "tag @s add mcnb_listener",
-            f"scoreboard players set #t {NS} 0",
-            f"scoreboard players set #playing {NS} 1",
-            "forceload remove all",
-            _forceload_span(x0 - 2, bz1 - 1, x0 + PLAY_WINDOW, bz2 + 1),
-            f"tp @s {x0} {y0} {z0} {YAW_EAST:g} 0",
-            'gamemode spectator @s',
+    bps = layout.speed * 20.0
+    play_lines = [
+        "tag @s add mcnb_listener",
+        f"scoreboard players set #t {NS} 0",
+        f"scoreboard players set #playing {NS} 1",
+        "forceload remove all",
+        _forceload_span(x0 - 2, bz1 - 1, x0 + PLAY_WINDOW, bz2 + 1),
+        f"tp @s {x0} {y0} {z0} {YAW_EAST:g} 0",
+    ]
+    if run_mode:
+        # 自分の足で走る。移動速度はアイテムの属性で上げる。
+        # ただし**タイミングは datapack の /tp が握る**（毎 tick 位置を直すので、
+        # 走るのが速すぎても遅すぎても曲はずれない）。
+        amount = run_modifier_amount(bps)
+        play_lines += [
+            "gamerule player_movement_check false",
+            "gamemode adventure @s",
+            # 速度はアイテムの属性で上げる。プレイヤーに直接 modifier を足すと
+            # ブーツと二重に効いてしまうので、片方だけにする
+            f"attribute @s minecraft:movement_speed modifier remove {SPEED_MODIFIER_ID}",
+            "item replace entity @s armor.feet with minecraft:leather_boots["
+            "minecraft:custom_name='{\"text\":\"疾走のブーツ\"}',"
+            "minecraft:attribute_modifiers=["
+            '{type:"minecraft:movement_speed",'
+            f'amount:{amount:.3f},operation:"add_multiplied_base",'
+            'slot:"feet",id:"mcnb:boots"}]]',
+            f'tellraw @a {{"text":"[mcnb] 演奏開始 — 前を向いて走ってください（{bps:.1f} ブロック/秒）"}}',
+        ]
+    else:
+        play_lines += [
+            "gamemode spectator @s",
             'tellraw @a {"text":"[mcnb] 演奏開始"}',
-        ],
-    )
+        ]
+    w.write("play.mcfunction", play_lines)
 
     w.write(
         "stop.mcfunction",
@@ -306,6 +357,10 @@ def emit(layout: Layout, out_dir: Path, name: str | None = None, overwrite: bool
             f"scoreboard players set #playing {NS} 0",
             # 曲が終わったら開始位置へ戻す。1206 ブロック先に置き去りにしない
             f"tp @a[tag=mcnb_listener] {x0} {y0} {z0} {YAW_EAST:g} 0",
+            # /attribute は単一エンティティしか受け付けないので execute as で回す
+            "execute as @a[tag=mcnb_listener] run attribute @s "
+            f"minecraft:movement_speed modifier remove {SPEED_MODIFIER_ID}",
+            "item replace entity @a[tag=mcnb_listener] armor.feet with minecraft:air",
             "tag @a remove mcnb_listener",
             "forceload remove all",
             _forceload_span(x0 - 16, bz1 - 1, x0 + 16, bz2 + 1),
@@ -339,16 +394,21 @@ def emit(layout: Layout, out_dir: Path, name: str | None = None, overwrite: bool
     by_tick = layout.placements_by_tick()
     for tick in range(total_ticks + 1):
         px, py, pz = layout.player_pos(tick)
-        lines = [f"tp @a[tag=mcnb_listener] {px} {py} {pz} {YAW_EAST:g} 0"]
+        # X は小数。1 tick に 0.365 ブロックずつ動かすと走っているように見える。
+        # 向きも毎 tick 指定するので、マウスを動かしても左右にずれない
+        lines = [f"tp @a[tag=mcnb_listener] {px:.3f} {py} {pz} {YAW_EAST:g} 0"]
 
         # 前 tick の発火用レッドストーンを片付ける。実際に置いた範囲だけ fill する
-        prev = by_tick.get(tick - 1) if tick > 0 else None
-        if prev:
-            prev_x = layout.player_pos(tick - 1)[0] - 1
-            ys = [p.y for p in prev]
-            zs = [p.z for p in prev]
+        # 前 tick の発火用レッドストーンを片付ける。
+        #
+        # 走る速度だと複数の tick が同じ平面を共有するので、「前 tick が置いた
+        # ぶんだけ」を消すと、音の無い tick を挟んだときに消し残しが出る。
+        # 消し残した音符ブロックは powered=true のままになり、次に鳴らなくなる。
+        # そこで**その平面の発火レーンを丸ごと**掃除する（fill 1回で済む）。
+        if tick > 0:
+            prev_x = layout.plane_x(tick - 1) - 1
             lines.append(
-                f"fill {prev_x} {min(ys)} {min(zs)} {prev_x} {max(ys)} {max(zs)} "
+                f"fill {prev_x} {by1} {bz1} {prev_x} {by2} {bz2} "
                 "minecraft:air replace minecraft:redstone_block"
             )
 
@@ -359,7 +419,9 @@ def emit(layout: Layout, out_dir: Path, name: str | None = None, overwrite: bool
         # 先読みで forceload の窓を張り替える
         if tick % PLAY_WINDOW_TICKS == 0:
             lines.append("forceload remove all")
-            lines.append(_forceload_span(px - 4, bz1 - 1, px + PLAY_WINDOW, bz2 + 1))
+            lines.append(
+                _forceload_span(int(px) - 4, bz1 - 1, int(px) + PLAY_WINDOW, bz2 + 1)
+            )
 
         w.write(f"t/{tick}.mcfunction", lines)
 

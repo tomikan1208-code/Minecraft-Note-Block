@@ -34,12 +34,23 @@ def run_hyperchoron(src: Path, dest: Path, extra: list[str] | None = None, quiet
 
     音楽的な変換（分離・採譜・楽器割り当て・strum・音量）は全部あちらに任せ、
     Minecraft 内の配置とタイミングだけをこちらでやる。
+
+    NBS ヘッダーの曲名は pynbs が cp1252 でエンコードするため、
+    日本語などの非 ASCII 名を直接書き込めない。ASCII セーフな作業名で
+    hyperchoron を実行し、出力後に希望のファイル名へ renaming する。
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
+
+    # 非 ASCII ファイル名 → 一時名で変換して後から updates
+    work_dest = dest
+    if any(ord(c) > 127 for c in dest.stem):
+        tmp = dest.with_name(f"_mcnb_tmp_{abs(hash(dest)) % 0xFFFF}{dest.suffix}")
+        work_dest = tmp
+
     cmd = [
         sys.executable, "-m", "hyperchoron",
         "-i", str(src),
-        "-o", str(dest),
+        "-o", str(work_dest),
         "-r", "20",             # Minecraft の game tick は 20Hz。既定の 40Hz だと倍速になる
         "--strict-tempo",       # tick 境界にきっちり合わせる
         "--no-microtones",      # バニラで鳴る範囲に留める
@@ -60,10 +71,13 @@ def run_hyperchoron(src: Path, dest: Path, extra: list[str] | None = None, quiet
     proc = subprocess.run(
         cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env
     )
-    if proc.returncode != 0 or not dest.is_file():
+    if proc.returncode != 0 or not work_dest.is_file():
         sys.stderr.write(proc.stdout or "")
         sys.stderr.write(proc.stderr or "")
         raise RuntimeError(f"hyperchoron が失敗しました (exit {proc.returncode})")
+
+    if work_dest != dest:
+        shutil.move(str(work_dest), str(dest))
 
 
 @dataclass
@@ -96,10 +110,11 @@ def build_one(
     out_root: Path,
     name: str | None = None,
     origin: tuple[int, int, int] = (0, layout.FLAT_SURFACE_Y, 0),
-    spacing: int = layout.SPACING,
+    speed: float | None = None,
     max_polyphony: int = 200,
     verbose: bool = True,
     arrange_config=None,
+    run_mode: bool = False,
 ) -> BuildResult:
     """1つの入力を最後まで通す。CLI からもテストランナーからも使う。"""
     name = name or src.stem
@@ -129,12 +144,12 @@ def build_one(
             print("\n■ 編曲")
             print(arrange_mod.summarize(arrange_config))
 
-    lay = layout.build_layout(tune, origin=origin, spacing=spacing, max_polyphony=max_polyphony)
+    lay = layout.build_layout(tune, origin=origin, speed=speed, max_polyphony=max_polyphony)
     if verbose:
         print("\n■ Minecraft 空間に配置（直線コリドー）")
         print(layout.summarize(lay))
 
-    pack = datapack.emit(lay, out / f"{name}_datapack", name=name)
+    pack = datapack.emit(lay, out / f"{name}_datapack", name=name, run_mode=run_mode)
     if verbose:
         print("\n■ データパック")
         print(datapack.summarize(pack))
@@ -169,9 +184,10 @@ def cmd_build(args: argparse.Namespace) -> int:
             Path(args.out),
             name=args.name or fetched_name,
             origin=tuple(args.origin),
-            spacing=args.spacing,
+            speed=args.speed,
             max_polyphony=args.max_polyphony,
             arrange_config=_arrange_config(args),
+            run_mode=getattr(args, "run", False),
         )
     except (ValueError, RuntimeError) as e:
         print(f"エラー: {e}", file=sys.stderr)
@@ -405,7 +421,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", default=str(DEFAULT_OUT))
     p.add_argument("--origin", type=int, nargs=3, default=[0, layout.FLAT_SURFACE_Y, 0],
                    metavar=("X", "Y", "Z"), help="既定はフラット地形の地表 (0, -60, 0)")
-    p.add_argument("--spacing", type=int, default=layout.SPACING, help="1 tick あたりの X ブロック数")
+    p.add_argument("--run", action="store_true",
+                   help="自分の足で走る（アイテム属性で移動速度を上げる）。"
+                        "既定はスペクテイターで datapack が動かす")
+    p.add_argument("--speed", type=float, default=None, metavar="B",
+                   help="プレイヤーの移動速度（ブロック/tick）。"
+                        "既定は曲の密度から自動。0.365 = スプリント+速度II")
     p.add_argument("--max-polyphony", type=int, default=200,
                    help="1 tick の最大同時発音（バニラ247 / RSLS導入なら4095まで）")
     p.add_argument("--concurrent", type=int, default=0, metavar="N",

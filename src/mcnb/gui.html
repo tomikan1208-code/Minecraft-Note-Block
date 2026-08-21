@@ -203,7 +203,12 @@ $('#clear').addEventListener('click', () => { out.textContent = ''; });
 async function start(spec) {
   const res = await fetch('/api/run', {method:'POST', headers:{'Content-Type':'application/json'},
                                        body: JSON.stringify(spec)});
-  if (!res.ok) { alert((await res.json()).detail || '起動できませんでした'); return; }
+  if (!res.ok) {
+    const err = await res.json();
+    const d = err.detail;
+    alert(Array.isArray(d) ? d.map(x => x.msg || JSON.stringify(x)).join('\n') : (d || '起動できませんでした'));
+    return;
+  }
   const job = await res.json();
   currentJob = job.id;
   out.textContent = '';

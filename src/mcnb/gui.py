@@ -163,7 +163,7 @@ def collect_state() -> dict:
 
 def create_app():
     try:
-        from fastapi import FastAPI, HTTPException, Request
+        from fastapi import Body, FastAPI, HTTPException
         from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
     except ImportError as e:  # pragma: no cover
         raise RuntimeError("GUI の依存が入っていません: uv sync --extra gui") from e
@@ -182,8 +182,7 @@ def create_app():
         return {**collect_state(), "current": current.to_dict() if current else None}
 
     @app.post("/api/run")
-    async def run(request: Request) -> dict:
-        body = await request.json()
+    async def run(body: dict = Body(...)) -> dict:
         label = str(body.get("label") or "実行")
         args = [str(a) for a in body.get("args") or []]
         if not args:
@@ -195,8 +194,7 @@ def create_app():
         return job.to_dict()
 
     @app.post("/api/stop")
-    async def stop(request: Request) -> dict:
-        body = await request.json()
+    async def stop(body: dict = Body(default={})) -> dict:
         return {"stopped": runner.stop(str(body.get("id") or runner.current or ""))}
 
     @app.get("/api/log/{job_id}")
