@@ -222,6 +222,8 @@ def _arrange_config(args: argparse.Namespace):
         return None
     return arrange_mod.ArrangeConfig(
         max_concurrent=getattr(args, "concurrent", DEFAULT_CONCURRENT),
+        quantize=not getattr(args, "no_quantize", False),
+        division=getattr(args, "division", 4) or 4,
         voice_roles=not getattr(args, "no_voice_roles", False),
         emphasize_melody=not getattr(args, "no_emphasis", False),
     )
@@ -542,6 +544,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--concurrent", type=int, default=DEFAULT_CONCURRENT, metavar="N",
                    help=f"同時に鳴っている音を N 個までに抑える（既定 {DEFAULT_CONCURRENT} / 0 で無制限）")
     p.add_argument("--no-arrange", action="store_true", help="編曲を一切掛けない（採譜そのまま）")
+    p.add_argument("--no-quantize", action="store_true",
+                   help="拍の格子への割り付けをやめる")
+    p.add_argument("--division", type=int, default=4, metavar="N",
+                   help="1 拍を N 分割した格子に音符を載せる（既定 4 = 16分音符）")
     p.add_argument("--no-voice-roles", action="store_true",
                    help="主旋律・低音への楽器の割り当てをやめる")
     p.add_argument("--no-emphasis", action="store_true",
@@ -582,6 +588,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--concurrent", type=int, default=DEFAULT_CONCURRENT, metavar="N",
                    help=f"同時に鳴っている音を N 個までに抑える（既定 {DEFAULT_CONCURRENT} / 0 で無制限）")
     p.add_argument("--no-arrange", action="store_true", help="編曲を一切掛けない（採譜そのまま）")
+    p.add_argument("--no-quantize", action="store_true",
+                   help="拍の格子への割り付けをやめる")
+    p.add_argument("--division", type=int, default=4, metavar="N",
+                   help="1 拍を N 分割した格子に音符を載せる（既定 4 = 16分音符）")
     p.add_argument("--no-voice-roles", action="store_true",
                    help="主旋律・低音への楽器の割り当てをやめる")
     p.add_argument("--no-emphasis", action="store_true",
@@ -631,6 +641,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--concurrent", type=int, default=DEFAULT_CONCURRENT, metavar="N",
                    help=f"同時に鳴っている音を N 個までに抑える（既定 {DEFAULT_CONCURRENT} / 0 で無制限）")
     p.add_argument("--no-arrange", action="store_true", help="編曲を一切掛けない（採譜そのまま）")
+    p.add_argument("--no-quantize", action="store_true",
+                   help="拍の格子への割り付けをやめる")
+    p.add_argument("--division", type=int, default=4, metavar="N",
+                   help="1 拍を N 分割した格子に音符を載せる（既定 4 = 16分音符）")
     p.add_argument("--no-voice-roles", action="store_true",
                    help="主旋律・低音への楽器の割り当てをやめる")
     p.add_argument("--no-emphasis", action="store_true",

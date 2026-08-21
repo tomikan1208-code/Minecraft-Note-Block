@@ -13,6 +13,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 from .instruments import INSTRUMENTS
 from .song import TICKS_PER_SECOND, NoteEvent, Song
 
@@ -90,6 +92,96 @@ def musical_weight(event: NoteEvent, context: MusicalContext, offset: float = 0.
         weight += WEIGHT_BASS
 
     return weight
+
+
+# --------------------------------------------------------------------------- #
+# 拍の格子に割り付ける
+# --------------------------------------------------------------------------- #
+
+#: 1 拍を何分割した格子に載せるか。4 なら 16 分音符
+QUANTIZE_DIVISION = 4
+#: 同じ枠に入った音のうち、これ以内の音程差なら 1 音にまとめる（半音）。
+#: 採譜は 1 つの音を半音上下に揺れながら刻むことがある（実測で MIDI 76 の
+#: 1 音が 76/77 を 0.05 秒ごとに行き来する 8 連打になっていた）。
+#: 音程が違うので「同じ音の連打」としては引っかからず、素通りしていた。
+QUANTIZE_MERGE_SEMITONES = 1.0
+
+
+def _grid_ticks(context: MusicalContext, offset: float, division: int) -> list[int]:
+    """拍を分割した格子を tick で返す。"""
+    if not context.beats:
+        return []
+    grid: list[int] = []
+    beats = context.beats
+    for i, beat in enumerate(beats):
+        span = (beats[i + 1] - beat) if i + 1 < len(beats) else (
+            beat - beats[i - 1] if i else 0.5
+        )
+        for k in range(division):
+            seconds = beat + span * k / division - offset
+            tick = int(round(seconds * TICKS_PER_SECOND))
+            if tick >= 0 and (not grid or tick != grid[-1]):
+                grid.append(tick)
+    return grid
+
+
+def quantize(song: Song, config: ArrangeConfig) -> Song:
+    """音符を拍の格子に載せ、1 枠に 1 音だけ残す。
+
+    採譜は「1 つの音」を細かい連打として出すことがある。長く伸ばした音を
+    刻んだり、音程を半音上下に揺らしたりする。人が聴くと**1 音のはずが
+    ピロピロ鳴る**。同じ音程の連打なら thin_sustains が間引くが、
+    音程が揺れると別の音として素通りする。
+
+    拍が分かっているなら、「この枠には音符が 1 個」と決めてしまえばよい。
+    枠の中で近すぎる音程（既定で半音以内）は、大事なほうだけ残す。
+    和音は音程が離れているので残る。
+    """
+    if not config.quantize or config.context is None:
+        return song
+
+    grid = _grid_ticks(config.context, config.time_offset, config.division)
+    if len(grid) < 2:
+        return song
+
+    array = np.asarray(grid)
+    cells: dict[int, list[NoteEvent]] = defaultdict(list)
+    for e in song.events:
+        i = int(np.searchsorted(array, e.tick))
+        near = min(
+            (j for j in (i - 1, i) if 0 <= j < len(array)),
+            key=lambda j: abs(int(array[j]) - e.tick),
+            default=None,
+        )
+        cells[int(array[near]) if near is not None else e.tick].append(e)
+
+    kept: list[NoteEvent] = []
+    removed = 0
+    for tick, events in cells.items():
+        events.sort(key=lambda e: -importance(e, config.context, config.time_offset))
+        chosen: list[NoteEvent] = []
+        drums: set[str] = set()
+        for e in events:
+            if e.instrument in PERCUSSION:
+                # 打楽器の midi は音程ではないので、半音の近さで比べても意味がない。
+                # 同じ枠に同じ太鼓が 2 つ要ることもないので、楽器ごとに 1 つにする
+                if e.instrument in drums:
+                    removed += 1
+                    continue
+                drums.add(e.instrument)
+            elif any(
+                c.instrument not in PERCUSSION
+                and abs(e.midi - c.midi) <= QUANTIZE_MERGE_SEMITONES
+                for c in chosen
+            ):
+                removed += 1
+                continue
+            chosen.append(replace(e, tick=tick))
+        kept.extend(chosen)
+
+    config.stats["quantize"] = removed
+    kept.sort(key=lambda e: (e.tick, -e.velocity))
+    return Song(name=song.name, events=kept, source=song.source)
 
 
 # --------------------------------------------------------------------------- #
@@ -253,6 +345,11 @@ class ArrangeConfig:
     #: 実際に重なっている数は減らない。雑音らしさ（spectral flatness）は
     #: 音数ではなく**重なりの数**で決まることが実測で分かったので、こちらを制御する。
     max_concurrent: int = 0
+
+    #: 音符を拍の格子に載せ、1 枠に 1 音だけ残す
+    quantize: bool = True
+    #: 1 拍を何分割するか。4 なら 16 分音符
+    division: int = QUANTIZE_DIVISION
 
     #: 主旋律と低音に、役割に合った楽器を割り当てる
     voice_roles: bool = True
@@ -511,6 +608,9 @@ def cap_concurrent(song: Song, config: ArrangeConfig) -> Song:
 
 #: 掛ける順番。倍音を落としてから重複を消し、最後に密度を切る
 PIPELINE = [
+    # 格子への割り付けが最初。ここで tick が動くので、あとの処理は
+    # 動いたあとの位置で数えないと辻褄が合わない
+    ("quantize", quantize, "quantize"),
     # 音色は先に決める。cap_concurrent が楽器ごとの減衰時間で重なりを数えるので、
     # あとから楽器を変えると数え直しになる
     ("voice_by_role", voice_by_role, "voice_roles"),

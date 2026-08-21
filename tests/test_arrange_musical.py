@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import collections
+
 from mcnb import arrange as A
 from mcnb.musical import Chord, MusicalContext
 from mcnb.song import TICKS_PER_SECOND, NoteEvent, Song
@@ -203,17 +205,58 @@ def test_melody_is_placed_closer_than_the_accompaniment():
     assert melody < rest, f"旋律 {melody:.1f} / 伴奏 {rest:.1f} ブロック"
 
 
-def test_percussion_is_left_alone():
-    """打楽器は音程を持たないので、音色も強弱も触らないこと。"""
+def test_percussion_keeps_its_voice_and_level():
+    """打楽器は音程を持たないので、音色も強弱も触らないこと。
+
+    位置（tick）は格子に載るので動く。ドラムこそ拍に乗るべきなので、それでよい。
+    """
     context = _melody_context()
     drums = [
         NoteEvent(tick=t, instrument="snare", midi=64, velocity=0.7) for t in range(0, 32, 4)
     ]
     song = Song(name="d", events=drums)
     out, _ = A.arrange(song, A.ArrangeConfig(context=context, max_concurrent=0))
-    assert [(e.tick, e.instrument, e.velocity) for e in out.events] == [
-        (e.tick, e.instrument, e.velocity) for e in drums
+    assert {(e.instrument, e.velocity) for e in out.events} == {("snare", 0.7)}
+
+
+def test_quantize_collapses_a_semitone_flutter():
+    """1 音のはずが半音を行き来する連打になっているものを、1 音にまとめること。
+
+    採譜は長い音を刻みながら音程を半音揺らすことがある（実測で MIDI 76 の 1 音が
+    76/77 を 0.05 秒ごとに行き来する 8 連打になっていた）。音程が違うので
+    「同じ音の連打」としては引っかからず、素通りしていた。
+    """
+    context = _melody_context()
+    flutter = [
+        _note(tick, 76 if tick % 2 == 0 else 77, 0.6) for tick in range(0, 12)
     ]
+    song = Song(name="f", events=flutter)
+
+    plain, _ = A.arrange(song, A.ArrangeConfig(context=context, quantize=False, max_concurrent=0))
+    gridded, _ = A.arrange(song, A.ArrangeConfig(context=context, max_concurrent=0))
+
+    def clashes(s):
+        by = {}
+        for e in s.events:
+            by.setdefault(e.tick, []).append(e.midi)
+        return sum(1 for v in by.values() for i, a in enumerate(v) for b in v[i + 1:] if abs(a - b) == 1)
+
+    assert clashes(gridded) == 0, "半音のぶつかりが残っている"
+    assert len(gridded.events) < len(flutter), (
+        f"連打がまとまっていない {len(flutter)} → {len(gridded.events)}"
+    )
+    # 入力は全部が互いに半音以内なので、1 枠に 1 音しか残らないはず
+    per_tick = collections.Counter(e.tick for e in gridded.events)
+    assert max(per_tick.values()) == 1, f"同じ枠に複数残っている {per_tick.most_common(3)}"
+
+
+def test_quantize_keeps_chords():
+    """和音は音程が離れているので、まとめずに残すこと。"""
+    context = _melody_context()
+    chord = [_note(0, m, 0.6) for m in (60, 64, 67, 72)]
+    song = Song(name="c", events=chord)
+    out, _ = A.arrange(song, A.ArrangeConfig(context=context, max_concurrent=0))
+    assert sorted(e.midi for e in out.events) == [60, 64, 67, 72]
 
 
 def test_the_two_bands_neither_overlap_nor_saturate():

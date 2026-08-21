@@ -1083,8 +1083,9 @@ def analyze(
     )
 
 
-#: 採譜と原音のずれを探す範囲（秒）
-MAX_ALIGN_SHIFT = 1.0
+#: 採譜と原音のずれを探す範囲（秒）。
+#: 採譜が先頭の無音を落とすと数秒ずれることがある（実測で 2.2 秒）ので広めに取る。
+MAX_ALIGN_SHIFT = 4.0
 
 
 def estimate_offset(

@@ -142,6 +142,15 @@ img.plot{width:100%;border:1px solid var(--line);border-radius:5px;margin-bottom
     <input type="number" id="concurrent" value="60" min="0" max="4095">
     <p class="hint">音符ブロックの音は 0.5〜16 tick 残る。ここが「濁り」を決める。0 で無制限。</p>
 
+    <label for="division">拍の分割（音符を載せる格子）</label>
+    <select id="division">
+      <option value="0">割り付けない</option>
+      <option value="2">8分音符</option>
+      <option value="4" selected>16分音符</option>
+      <option value="8">32分音符</option>
+    </select>
+    <p class="hint">「この枠には音符が1個」と決める。採譜は1つの音を半音上下に揺らしながら刻むことがあり、そのままだとピロピロ鳴る。16分で半音のぶつかりが 319→0 になった。</p>
+
     <label>編曲</label>
     <div class="opts">
       <label class="chk"><input type="checkbox" id="arrange" checked> 編曲する（外すと採譜そのまま）</label>
@@ -234,6 +243,8 @@ function buildOpts() {
              '--concurrent', $('#concurrent').value,
              '--source', $('#source').value,
              '--move', $('#move').value];
+  const div = $('#division').value;
+  if (div === '0') a.push('--no-quantize'); else a.push('--division', div);
   if (!$('#arrange').checked)     a.push('--no-arrange');
   if (!$('#voiceRoles').checked)  a.push('--no-voice-roles');
   if (!$('#emphasis').checked)    a.push('--no-emphasis');
@@ -269,7 +280,7 @@ $('#clear').addEventListener('click', () => { out.textContent = ''; });
 // 編曲そのものを切ったら、細かい切り替えは意味がないので触れなくする
 function syncArrange() {
   const on = $('#arrange').checked;
-  for (const id of ['voiceRoles', 'emphasis', 'concurrent']) $('#' + id).disabled = !on;
+  for (const id of ['voiceRoles', 'emphasis', 'concurrent', 'division']) $('#' + id).disabled = !on;
 }
 $('#arrange').addEventListener('change', syncArrange);
 syncArrange();
